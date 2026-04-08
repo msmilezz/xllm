@@ -103,6 +103,11 @@ class NpuOneRecBlockLayerImpl final : public BaseLayer {
 
   int64_t init_attn_mask();
 
+  void refresh_runtime_batch_size(atb_speed::Model::Node& node,
+                                  atb_speed::onerec::BlockLayerParam& param,
+                                  int32_t runtime_bs,
+                                  const char* node_name);
+
   int setup_common_decoder_tensors(atb_speed::Model::Node& node,
                                    torch::Tensor& x,
                                    at::Tensor& attn_mask,

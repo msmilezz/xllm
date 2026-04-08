@@ -1066,6 +1066,25 @@ int64_t NpuOneRecBlockLayerImpl::init_layer() {
 
 int64_t NpuOneRecBlockLayerImpl::init_attn_mask() { return atb::NO_ERROR; }
 
+void NpuOneRecBlockLayerImpl::refresh_runtime_batch_size(
+    atb_speed::Model::Node& node,
+    atb_speed::onerec::BlockLayerParam& param,
+    int32_t runtime_bs,
+    const char* node_name) {
+  if (runtime_bs <= 0 || param.bs == runtime_bs) {
+    return;
+  }
+
+  LOG(INFO) << "OneRec runtime bs refresh: layer_id=" << layer_id_
+            << ", node=" << node_name << ", old_bs=" << param.bs
+            << ", new_bs=" << runtime_bs;
+  param.bs = runtime_bs;
+  const int64_t status = init_node(node, param);
+  CHECK_EQ(status, atb::NO_ERROR)
+      << "OneRec init_node failed after runtime bs refresh, layer_id="
+      << layer_id_ << ", node=" << node_name << ", bs=" << runtime_bs;
+}
+
 int64_t NpuOneRecBlockLayerImpl::init_node(
     atb_speed::Model::Node& node,
     atb_speed::onerec::BlockLayerParam& param) {
@@ -1120,6 +1139,16 @@ torch::Tensor NpuOneRecBlockLayerImpl::forward(
 
   const bool is_prefill =
       onerec_params->rec_stage == OneRecModelInputParams::RecStage::PREFILL;
+  if (is_decoder_) {
+    const int32_t runtime_bs = input_params.num_sequences;
+    if (is_prefill) {
+      refresh_runtime_batch_size(
+          prefill_node_, prefill_param_, runtime_bs, "decoder-prefill");
+    } else {
+      refresh_runtime_batch_size(
+          decode_node_, decode_param_, runtime_bs, "decoder-decode");
+    }
+  }
 
   atb::Status st;
   if (is_prefill) {
@@ -1315,6 +1344,8 @@ int NpuOneRecBlockLayerImpl::setup_common_decoder_tensors(
     LOG(INFO) << "OneRec dual-embedding NPU meta: layer_id=" << layer_id_
               << ", x_rows=" << x.size(0)
               << ", num_sequences=" << input_params.num_sequences
+              << ", prefill_param_bs=" << prefill_param_.bs
+              << ", decode_param_bs=" << decode_param_.bs
               << ", q_max_seq_len=" << input_params.q_max_seq_len
               << ", kv_max_seq_len=" << input_params.kv_max_seq_len
               << ", q_seq_lens_size=" << input_params.q_seq_lens_vec.size()
