@@ -1120,7 +1120,6 @@ torch::Tensor NpuOneRecBlockLayerImpl::forward(
 
   const bool is_prefill =
       onerec_params->rec_stage == OneRecModelInputParams::RecStage::PREFILL;
-<<<<<<< HEAD
 
 #if defined(USE_NPU)
   const int64_t x_format = at_npu::native::get_npu_format(x);
