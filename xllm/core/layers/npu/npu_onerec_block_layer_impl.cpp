@@ -1139,6 +1139,20 @@ torch::Tensor NpuOneRecBlockLayerImpl::forward(
 
   const bool is_prefill =
       onerec_params->rec_stage == OneRecModelInputParams::RecStage::PREFILL;
+
+#if defined(USE_NPU)
+  const int64_t x_format = at_npu::native::get_npu_format(x);
+  if (x_format != ACL_FORMAT_ND) {
+    LOG(INFO) << "OneRec dual-embedding ND cast: layer_id=" << layer_id_
+              << ", old_format=" << x_format
+              << ", x_shape=" << x.sizes();
+    x = at_npu::native::npu_format_cast(x.contiguous(), ACL_FORMAT_ND);
+    LOG(INFO) << "OneRec dual-embedding ND cast result: layer_id=" << layer_id_
+              << ", new_format=" << at_npu::native::get_npu_format(x)
+              << ", x_shape=" << x.sizes();
+  }
+#endif
+
   if (is_decoder_) {
     const int32_t runtime_bs = input_params.num_sequences;
     if (is_prefill) {
