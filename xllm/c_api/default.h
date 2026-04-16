@@ -127,7 +127,7 @@ const XLLM_InitOptions XLLM_INIT_REC_OPTIONS_DEFAULT = {
     .xservice_addr = "",
     .instance_name = "",
     .kv_cache_transfer_mode = "PUSH",
-    .log_dir = "",
+    .log_dir = "./Logs",
     .draft_model = "",
     .draft_devices = ""};
 
