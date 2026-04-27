@@ -415,7 +415,11 @@ HFModelLoader::HFModelLoader(const std::string& model_weights_path)
   std::sort(model_weights_files_.begin(), model_weights_files_.end());
 
   threadpool_ = std::make_unique<ThreadPool>(32);
-  if (FLAGS_backend == "rec" && is_onerec_model_type(args_.model_type())) {
+  // OneRec needs RecVocabDict (beam_search_filter.bin) for constrained
+  // decoding. Do not gate on FLAGS_backend: embedders (e.g. REC C API) set
+  // Options.backend to "rec" but may not set the global FLAGS_backend before
+  // ModelLoader runs.
+  if (is_onerec_model_type(args_.model_type())) {
     CHECK(load_rec_vocab(model_weights_path))
         << "Failed to load rec content from " << model_weights_path;
   }

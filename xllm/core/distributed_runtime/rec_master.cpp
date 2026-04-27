@@ -32,6 +32,7 @@ limitations under the License.
 #include "common/types.h"
 #include "framework/request/mm_data.h"
 #include "models/model_registry.h"
+#include "platform/device.h"
 #include "rec_engine.h"
 #include "runtime/xservice_client.h"
 #include "scheduler/scheduler_factory.h"
@@ -552,11 +553,57 @@ void RecMaster::run() {
     return;
   }
   running_.store(true, std::memory_order_relaxed);
-  loop_thread_ = std::thread([this]() {
+
+  // 解析本 handler 要绑定的 NPU 设备。同一进程内多 handler 数据并行时，每个
+  // RecMaster 的 loop_thread 会驱动 scheduler_->step()，最终进入
+  // RecEngine::step()/get_model_output()，后者包含 synchronize_default_stream
+  // 与 NPU kernel 下发。这些调用依赖线程当前 ACL current device 与 handler
+  // 真正绑定的设备一致；未显式 set_device 时，current device 可能被其它
+  // handler 线程改写，触发 ACL_ERROR_RT_STREAM_CONTEXT (107017) /
+  // rtMemcpyAsync 失败。
+  std::optional<torch::Device> loop_device;
+  if (options_.devices().has_value()) {
+    std::string spec = options_.devices().value();
+    const auto comma_pos = spec.find(',');
+    if (comma_pos != std::string::npos) {
+      spec = spec.substr(0, comma_pos);
+    }
+    try {
+      loop_device.emplace(spec);
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "RecMaster::run: failed to parse device spec '" << spec
+                   << "', loop thread will not bind: " << e.what();
+    }
+  }
+
+  loop_thread_ = std::thread([this, loop_device]() {
+    if (loop_device.has_value()) {
+      Device(*loop_device).set_device();
+      LOG(INFO) << "RecMaster loop_thread bound to device " << *loop_device;
+    }
     const auto timeout = absl::Milliseconds(5);
     while (!stopped_.load(std::memory_order_relaxed)) {
-      // move scheduler forward
-      scheduler_->step(timeout);
+      // 同进程多 handler 数据并行时，某张卡一旦出现 aicore exception /
+      // ACL_ERROR_RT_STREAM_CONTEXT，torch_npu 的 Repository 会进入错误态，
+      // 之后 synchronize_default_stream / MakeSureQueueEmpty 会抛
+      // std::runtime_error。不能让异常穿透到 std::thread 顶层触发
+      // std::terminate 把另一张卡也拖垮，必须在本 handler 局部消化掉异常，
+      // 让另一张卡的 RecMaster 继续为在线流量服务。
+      try {
+        scheduler_->step(timeout);
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "RecMaster loop_thread caught exception on device="
+                   << (loop_device.has_value() ? loop_device->str()
+                                               : std::string("unknown"))
+                   << ", error=" << e.what()
+                   << ". This handler will continue draining; the other "
+                      "handler stays online.";
+      } catch (...) {
+        LOG(ERROR) << "RecMaster loop_thread caught unknown exception on "
+                      "device="
+                   << (loop_device.has_value() ? loop_device->str()
+                                               : std::string("unknown"));
+      }
     }
     running_.store(false, std::memory_order_relaxed);
   });

@@ -107,13 +107,27 @@ bool serialize_completion_response_proto(const InferenceType inference_type,
         output_tensor->mutable_shape()->Add(0);
         output_tensor->mutable_shape()->Add(0);
       } else {
-        output_tensor->mutable_shape()->Add(req_output.outputs.size());
-        output_tensor->mutable_shape()->Add(
-            req_output.outputs[0].token_ids.size());
+        int32_t max_tokens_per_beam = 0;
+        for (const auto& o : req_output.outputs) {
+          const int32_t n = static_cast<int32_t>(o.token_ids.size());
+          if (n > max_tokens_per_beam) {
+            max_tokens_per_beam = n;
+          }
+        }
+        const int32_t output_count =
+            static_cast<int32_t>(req_output.outputs.size());
+        output_tensor->mutable_shape()->Add(output_count);
+        output_tensor->mutable_shape()->Add(max_tokens_per_beam);
         auto* contents = output_tensor->mutable_contents();
         for (const auto& output : req_output.outputs) {
-          contents->mutable_int_contents()->Add(output.token_ids.begin(),
-                                                output.token_ids.end());
+          for (int32_t token : output.token_ids) {
+            contents->mutable_int_contents()->Add(token);
+          }
+          for (int32_t pad = static_cast<int32_t>(output.token_ids.size());
+               pad < max_tokens_per_beam;
+               ++pad) {
+            contents->mutable_int_contents()->Add(-1);
+          }
         }
       }
     }
@@ -169,6 +183,36 @@ void shutdown_log() {
   pthread_mutex_unlock(&g_log_init_mutex);
 }
 
+namespace {
+
+// Embedded callers may memcpy into XLLM_* structs without a trailing '\0'.
+// Force the last byte to NUL so strlen / std::string(const char*) stay bounded.
+void terminate_init_options_meta_strings(XLLM_InitOptions* options) {
+  if (options == nullptr) {
+    return;
+  }
+  options->task[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->communication_backend[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->instance_role[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->device_ip[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->master_node_addr[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->xservice_addr[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->instance_name[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->kv_cache_transfer_mode[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->log_dir[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->draft_model[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+  options->draft_devices[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+}
+
+void terminate_request_params_meta_strings(XLLM_RequestParams* params) {
+  if (params == nullptr) {
+    return;
+  }
+  params->request_id[XLLM_META_STRING_FIELD_MAX_LEN - 1] = '\0';
+}
+
+}  // namespace
+
 void set_init_options(BackendType backend_type,
                       const XLLM_InitOptions* init_options,
                       XLLM_InitOptions* xllm_init_options) {
@@ -186,6 +230,7 @@ void set_init_options(BackendType backend_type,
     memcpy(xllm_init_options, init_options, sizeof(XLLM_InitOptions));
   }
 
+  terminate_init_options_meta_strings(xllm_init_options);
   return;
 }
 
@@ -208,6 +253,8 @@ void transfer_request_params(InferenceType inference_type,
   } else {
     memcpy(&final_request_params, request_params, sizeof(XLLM_RequestParams));
   }
+
+  terminate_request_params_meta_strings(&final_request_params);
 
   xllm_request_params->echo = final_request_params.echo;
   xllm_request_params->offline = final_request_params.offline;
@@ -425,9 +472,14 @@ XLLM_Response* handle_inference_request(
   CHECK(nullptr != handler);
 
   std::string request_id;
-  if (nullptr != request_params && strlen(request_params->request_id) > 0) {
-    request_id = request_params->request_id;
-  } else {
+  if (request_params != nullptr) {
+    const size_t request_id_len =
+        strnlen(request_params->request_id, XLLM_META_STRING_FIELD_MAX_LEN);
+    if (request_id_len > 0) {
+      request_id.assign(request_params->request_id, request_id_len);
+    }
+  }
+  if (request_id.empty()) {
     request_id = generate_request_id();
   }
 

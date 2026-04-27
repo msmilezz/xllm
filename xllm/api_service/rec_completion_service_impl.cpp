@@ -115,8 +115,12 @@ bool send_result_to_client_brpc_rec(std::shared_ptr<CompletionCall> call,
     logprobs_tensor = response.mutable_output_tensors()->Add();
     logprobs_tensor->set_name("sku_logprobs");
     logprobs_tensor->set_datatype(proto::DataType::FLOAT);
-    logprob_width =
-        static_cast<int32_t>(req_output.outputs[0].token_ids_logprobs.size());
+    for (const auto& out : req_output.outputs) {
+      const int32_t w = static_cast<int32_t>(out.token_ids_logprobs.size());
+      if (w > logprob_width) {
+        logprob_width = w;
+      }
+    }
   }
 
   if (FLAGS_enable_convert_tokens_to_item) {
@@ -173,8 +177,15 @@ bool send_result_to_client_brpc_rec(std::shared_ptr<CompletionCall> call,
 
     const int32_t output_count =
         static_cast<int32_t>(req_output.outputs.size());
+    int32_t max_tokens_per_beam = 0;
+    for (const auto& out : req_output.outputs) {
+      const int32_t n = static_cast<int32_t>(out.token_ids.size());
+      if (n > max_tokens_per_beam) {
+        max_tokens_per_beam = n;
+      }
+    }
     output_tensor->mutable_shape()->Add(output_count);
-    output_tensor->mutable_shape()->Add(req_output.outputs[0].token_ids.size());
+    output_tensor->mutable_shape()->Add(max_tokens_per_beam);
     if (logprobs_tensor != nullptr) {
       logprobs_tensor->mutable_shape()->Add(output_count);
       logprobs_tensor->mutable_shape()->Add(logprob_width);
@@ -191,10 +202,15 @@ bool send_result_to_client_brpc_rec(std::shared_ptr<CompletionCall> call,
       }
     };
     for (int32_t i = 0; i < output_count; ++i) {
-      // LOG(INFO) << req_output.outputs[i].token_ids;
-      context->mutable_int_contents()->Add(
-          req_output.outputs[i].token_ids.begin(),
-          req_output.outputs[i].token_ids.end());
+      const auto& out = req_output.outputs[i];
+      for (int32_t token : out.token_ids) {
+        context->mutable_int_contents()->Add(token);
+      }
+      for (int32_t pad = static_cast<int32_t>(out.token_ids.size());
+           pad < max_tokens_per_beam;
+           ++pad) {
+        context->mutable_int_contents()->Add(-1);
+      }
       append_output_logprobs(i);
     }
   }

@@ -26,6 +26,7 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <string>
 
 #include "common/metrics.h"
 #include "common/types.h"
@@ -352,7 +353,34 @@ void FixedStepsScheduler::step(const absl::Duration& timeout) {
                      batches = std::move(result.batches),
                      requests = std::move(result.requests),
                      sequences = std::move(result.sequences)]() mutable {
-      engine_->step(batches);
+      // engine_->step 任一路径若向外抛异常，下面「收尾 + 回调」不会执行，
+      // C API 侧 promise 永不 setValue，predictor 会看到大量 FutureTimeout。
+      // 同进程多 NPU 时一张卡 ACL/aicore 错误常伴随同步抛错，必须在此兜底。
+      try {
+        engine_->step(batches);
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "FixedStepsScheduler: engine_->step threw, failing "
+                   << requests.size() << " request(s): " << e.what();
+        for (auto& request : requests) {
+          if (request) {
+            kv_cache_manager_->deallocate(request.get());
+            response_processor_->process_failed_request(
+                request,
+                {StatusCode::UNKNOWN,
+                 std::string("Rec engine step failed: ") + e.what()});
+          }
+        }
+      } catch (...) {
+        LOG(ERROR) << "FixedStepsScheduler: engine_->step threw unknown error";
+        for (auto& request : requests) {
+          if (request) {
+            kv_cache_manager_->deallocate(request.get());
+            response_processor_->process_failed_request(
+                request,
+                {StatusCode::UNKNOWN, "Rec engine step failed: unknown error"});
+          }
+        }
+      }
       kv_cache_manager_->reset_transfer_infos();
 
       // After step completes, check and process finished/cancelled requests

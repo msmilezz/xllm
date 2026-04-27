@@ -28,6 +28,7 @@ limitations under the License.
 #include <limits>
 #include <stdexcept>
 
+#include "core/common/global_flags.h"
 #include "core/framework/model_loader.h"
 #include "core/util/rec_model_utils.h"
 #include "core/util/utils.h"
@@ -68,12 +69,19 @@ void apply_multi_round_pipeline_toggles() {
   FLAGS_enable_topk_sorted = false;
 }
 
+// Embedded OneRec defaults aligned with start_rec_git.sh (xllm CLI flags).
+constexpr float kOneRecStartRecGitMaxMemoryUtilization = 0.9F;
+constexpr double kOneRecStartRecGitPrefillSchedulingMemoryUsageThreshold = 0.8;
+
 void apply_onerec_pipeline_toggles(xllm::Options* options) {
   FLAGS_enable_rec_prefill_only = true;
   FLAGS_enable_constrained_decoding = true;
   FLAGS_enable_prefix_cache = false;
   FLAGS_enable_schedule_overlap = false;
   FLAGS_enable_chunked_prefill = false;
+  FLAGS_enable_convert_tokens_to_item = false;
+  FLAGS_prefill_scheduling_memory_usage_threshold =
+      kOneRecStartRecGitPrefillSchedulingMemoryUsageThreshold;
 
   options->enable_prefix_cache(false)
       .enable_schedule_overlap(false)
@@ -86,7 +94,8 @@ void apply_onerec_pipeline_toggles(xllm::Options* options) {
 constexpr uint32_t kOneRecEmbeddedBlockSize = 128;
 constexpr uint32_t kOneRecEmbeddedMaxCacheSizeBytes =
     std::numeric_limits<uint32_t>::max();
-constexpr uint32_t kOneRecEmbeddedMaxSeqsPerBatch = 4;
+constexpr uint32_t kOneRecEmbeddedMaxTokensPerBatch = 20000;
+constexpr uint32_t kOneRecEmbeddedMaxSeqsPerBatch = 20;
 constexpr uint32_t kOneRecEmbeddedWorkerConcurrency = 1;
 
 bool should_apply_onerec_embedded_defaults(const char* model_path) {
@@ -112,15 +121,27 @@ void normalize_onerec_embedded_init_options(XLLM_InitOptions* init_options) {
   // - max_cache_size=1,000,000 yields zero KV cache blocks
   //
   // Align the embedded path with a configuration that is verified to start in
-  // the current repo while keeping its conservative batch sizing.
+  // the current repo while matching start_rec_git.sh batch and memory limits.
   if (init_options->block_size <= 1) {
     init_options->block_size = kOneRecEmbeddedBlockSize;
   }
   if (init_options->max_cache_size <= 1000000U) {
     init_options->max_cache_size = kOneRecEmbeddedMaxCacheSizeBytes;
   }
-  if (init_options->max_seqs_per_batch == 0) {
+  if (init_options->max_seqs_per_batch == 0 ||
+      init_options->max_seqs_per_batch == 4) {
     init_options->max_seqs_per_batch = kOneRecEmbeddedMaxSeqsPerBatch;
+  }
+  if (init_options->max_tokens_per_batch == 0 ||
+      init_options->max_tokens_per_batch == 4096) {
+    init_options->max_tokens_per_batch = kOneRecEmbeddedMaxTokensPerBatch;
+  }
+  // XLLM_INIT_REC_OPTIONS_DEFAULT uses 0.55; start_rec_git.sh uses 0.9.
+  constexpr float kRecInitOptionsDefaultMaxMemoryUtilization = 0.55F;
+  if (init_options->max_memory_utilization ==
+      kRecInitOptionsDefaultMaxMemoryUtilization) {
+    init_options->max_memory_utilization =
+        kOneRecStartRecGitMaxMemoryUtilization;
   }
 }
 
@@ -239,6 +260,19 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
     FLAGS_enable_schedule_overlap = xllm_init_options.enable_schedule_overlap;
     FLAGS_enable_chunked_prefill = xllm_init_options.enable_chunked_prefill;
 
+    // HFModelLoader only loads OneRec `beam_search_filter.bin` / RecVocabDict
+    // when FLAGS_backend == "rec" (see hf_model_loader.cpp). The REC C API sets
+    // Options::backend to "rec" but must mirror it here, otherwise
+    // RecVocabDict::initialize_ never runs while OneRec still enables
+    // constrained decoding in the worker.
+    FLAGS_backend = "rec";
+    // apply_onerec_pipeline_toggles() must run before ModelLoader::create() so
+    // RecVocabDict::initialize() sees FLAGS_enable_constrained_decoding for
+    // prefix-trie construction (the later reset_pipeline + switch is too late).
+    if (is_onerec_model) {
+      apply_onerec_pipeline_toggles(&options);
+    }
+
     auto model_loader = xllm::ModelLoader::create(model_path);
     if (model_loader == nullptr) {
       LOG(ERROR) << "Failed to create model loader for path: " << model_path;
@@ -300,11 +334,19 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
       LOG(INFO) << "Applied embedded OneRec REC defaults: block_size="
                 << xllm_init_options.block_size
                 << ", max_cache_size=" << xllm_init_options.max_cache_size
+                << ", max_tokens_per_batch="
+                << xllm_init_options.max_tokens_per_batch
                 << ", max_seqs_per_batch="
                 << xllm_init_options.max_seqs_per_batch
+                << ", max_memory_utilization="
+                << xllm_init_options.max_memory_utilization
+                << ", prefill_scheduling_memory_usage_threshold="
+                << FLAGS_prefill_scheduling_memory_usage_threshold
                 << ", enable_graph=" << FLAGS_enable_graph
                 << ", enable_chunked_prefill=" << FLAGS_enable_chunked_prefill
                 << ", enable_rec_prefill_only=" << FLAGS_enable_rec_prefill_only
+                << ", enable_convert_tokens_to_item="
+                << FLAGS_enable_convert_tokens_to_item
                 << ", rec_worker_max_concurrency="
                 << FLAGS_rec_worker_max_concurrency;
     }

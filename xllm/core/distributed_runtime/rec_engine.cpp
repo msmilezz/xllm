@@ -30,6 +30,7 @@ limitations under the License.
 #include "framework/parallel_state/parallel_state.h"
 #include "framework/request/rec_type.h"
 #include "master.h"  // For MasterStatus::WAKEUP constant
+#include "platform/device.h"
 #include "util/env_var.h"
 #include "util/net.h"
 #include "util/pretty_print.h"
@@ -635,8 +636,17 @@ size_t RecEngine::OneRecEnginePipeline::num_workers() const {
 ForwardOutput RecEngine::OneRecEnginePipeline::step(
     std::vector<Batch>& batches) {
   if (engine_.workers_.empty()) {
+    if (!batches.empty()) {
+      batches[0].finish();
+    }
     return {};
   }
+
+  // 双保险：scheduler loop 线程进入 engine step 前重置线程的 ACL current
+  // device，避免多 handler 同进程运行时 current device 被其它 handler 的
+  // 回调线程污染，导致 synchronize_default_stream 和 safe_to 触发
+  // ACL_ERROR_RT_STREAM_CONTEXT / aicore exception。
+  Device(engine_.workers_[0]->device()).set_device();
 
   Timer timer;
   // OneRec does not need refresh_forward_type
@@ -644,6 +654,9 @@ ForwardOutput RecEngine::OneRecEnginePipeline::step(
   COUNTER_ADD(prepare_input_latency_microseconds, timer.elapsed_microseconds());
 
   if (!forward_inputs.token_ids.defined()) {
+    LOG(ERROR) << "OneRec step: prepare_inputs returned undefined token_ids; "
+                  "failing batch to unblock scheduler.";
+    batches[0].finish();
     return {};
   }
 
@@ -651,6 +664,16 @@ ForwardOutput RecEngine::OneRecEnginePipeline::step(
   const auto& prefill_output = get_model_output(forward_inputs);
   COUNTER_ADD(rec_first_token_latency_microseconds,
               timer.elapsed_microseconds());
+
+  // 若底层 NPU 失败，get_model_output 会返回空 ForwardOutput。这里提前把
+  // 当前 batch 里的请求标记为失败，避免后续 process_sample_output 解引用
+  // 空 tensor 触发二次异常。
+  if (!prefill_output.sample_output.next_tokens.defined() &&
+      !prefill_output.sample_output.embeddings.defined()) {
+    LOG(ERROR) << "OneRec prefill step got empty output, failing batch.";
+    batches[0].finish();
+    return {};
+  }
 
   timer.reset();
   batches[0].process_sample_output(prefill_output.sample_output, false);
@@ -672,6 +695,14 @@ ForwardOutput RecEngine::OneRecEnginePipeline::step(
     } else if (i == 1) {
       COUNTER_ADD(rec_third_token_latency_microseconds,
                   timer.elapsed_microseconds());
+    }
+
+    if (!decode_output.sample_output.next_tokens.defined() &&
+        !decode_output.sample_output.embeddings.defined()) {
+      LOG(ERROR) << "OneRec decode step #" << i
+                 << " got empty output, failing batch.";
+      batches[0].finish();
+      return decode_output;
     }
 
     timer.reset();
@@ -696,18 +727,31 @@ ForwardOutput RecEngine::OneRecEnginePipeline::get_model_output(
   }
   auto results = folly::collectAll(futures).get();
 
-  // Check all worker results for failures
+  // 同进程多 handler 数据并行时，底层偶发 aicore exception /
+  // ACL_ERROR_RT_STREAM_CONTEXT 可能让 worker step 抛异常或返回空结果。
+  // 这里不再 LOG(FATAL) 把整个进程带崩，而是打印 ERROR 并返回空
+  // ForwardOutput，由上层 step 跳过后续采样；这样另一张卡的 handler 仍可
+  // 为在线请求继续服务。
   for (size_t i = 0; i < results.size(); ++i) {
     if (results[i].hasException()) {
-      LOG(FATAL) << "Worker " << i
-                 << " failed with exception: " << results[i].exception().what();
+      LOG(ERROR) << "Worker " << i
+                 << " failed with exception: " << results[i].exception().what()
+                 << ". Returning empty ForwardOutput to caller.";
+      return ForwardOutput{};
     }
-    CHECK(results[i].value().has_value())
-        << "Worker " << i << " failed to execute model and returned no output.";
+    if (!results[i].value().has_value()) {
+      LOG(ERROR) << "Worker " << i
+                 << " returned no output (likely NPU error upstream). "
+                    "Returning empty ForwardOutput to caller.";
+      return ForwardOutput{};
+    }
   }
 
   auto forward_output = results.front().value();
-  CHECK(forward_output.has_value()) << "Failed to execute model";
+  if (!forward_output.has_value()) {
+    LOG(ERROR) << "Worker 0 has no ForwardOutput; skipping model output.";
+    return ForwardOutput{};
+  }
 
   auto& output = forward_output.value();
   auto& sample_output = output.sample_output;

@@ -21,6 +21,8 @@ limitations under the License.
 #include <algorithm>
 #include <cstring>
 #include <set>
+#include <stdexcept>
+#include <string>
 
 #include "common/global_flags.h"
 namespace xllm {
@@ -1324,15 +1326,26 @@ torch::Tensor NpuOneRecBlockLayerImpl::forward(
                                         node_id);
         st = execute_node(prefill_node_, node_id, event, event_flag);
       }
-      LOG_IF(FATAL, st != 0)
-          << model_name_ << " execute prefill layer fail, error code: " << st;
+      if (st != 0) {
+        LOG(ERROR) << model_name_
+                   << " execute prefill layer fail, error code: " << st
+                   << ", throwing to let step_async recover.";
+        throw std::runtime_error(
+            model_name_ +
+            " execute prefill layer fail, error code: " + std::to_string(st));
+      }
     } else {
       build_encoder_node_variant_pack(
           prefill_node_, x, attn_mask, input_params, true, node_id);
       st = execute_node(prefill_node_, node_id, event, event_flag);
-      LOG_IF(FATAL, st != 0)
-          << model_name_
-          << " execute encoder prefill layer fail, error code: " << st;
+      if (st != 0) {
+        LOG(ERROR) << model_name_
+                   << " execute encoder prefill layer fail, error code: " << st
+                   << ", throwing to let step_async recover.";
+        throw std::runtime_error(
+            model_name_ + " execute encoder prefill layer fail, error code: " +
+            std::to_string(st));
+      }
     }
   } else {
     if (!is_decoder_) {
@@ -1362,8 +1375,14 @@ torch::Tensor NpuOneRecBlockLayerImpl::forward(
                                       node_id);
     }
     st = execute_node(decode_node_, node_id + 1000, event, event_flag);
-    LOG_IF(FATAL, st != 0) << model_name_
-                           << " execute decode layer fail, error code: " << st;
+    if (st != 0) {
+      LOG(ERROR) << model_name_
+                 << " execute decode layer fail, error code: " << st
+                 << ", throwing to let step_async recover.";
+      throw std::runtime_error(
+          model_name_ +
+          " execute decode layer fail, error code: " + std::to_string(st));
+    }
   }
 
   return at_placeholder_;

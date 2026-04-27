@@ -16,8 +16,10 @@ limitations under the License.
 #include "onerec_batch_input_builder.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <future>
+#include <mutex>
 #include <numeric>
 #include <thread>
 #include <vector>
@@ -30,15 +32,31 @@ limitations under the License.
 
 namespace xllm {
 
-// Use Meyers' Singleton pattern to avoid static initialization order fiasco
-// This ensures the cache is initialized on first use, after all dependencies
-// (like PyTorch runtime) are properly initialized.
-OneRecBatchInputBuilder::HighPerformanceCache&
-OneRecBatchInputBuilder::get_perf_cache() {
-  static HighPerformanceCache cache;
-  cache.ensure_tensors_initialized();
-  return cache;
+namespace {
+
+// 单进程多 xllm_handler 并发跑 OneRec 数据并行时，两张卡的 scheduler loop
+// 线程会同时调用 OneRecBatchInputBuilder::build_rec_forward_input，进而并发
+// 执行两个 torch::cat（encoder_sparse_embeddings 与
+// decoder_context_embeddings）。 这些 cat 在 libtorch CPU allocator + tcmalloc
+// 栈上会偶发 SIGSEGV （core 显示 at::TensorIteratorBase::build 访问空
+// vtable），根因是多个 handler 同时分配/释放中间 tensor
+// 时触发了分配器的并发问题。把锁只放在 cat 调用前后， 保证 prepare_inputs
+// 的其它逻辑仍可并行，两张卡的 NPU 执行也不受影响。 允许通过
+// XLLM_DISABLE_ONEREC_CAT_LOCK=1 关闭该互斥，用于排查性能影响。
+std::mutex& GetOneRecCatMutex() {
+  static std::mutex m;
+  return m;
 }
+
+bool OneRecCatLockEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("XLLM_DISABLE_ONEREC_CAT_LOCK");
+    return !(env != nullptr && env[0] == '1');
+  }();
+  return enabled;
+}
+
+}  // namespace
 
 OneRecBatchInputBuilder::OneRecBatchInputBuilder(
     const std::vector<SequencesGroup*>& sequence_groups,
@@ -59,16 +77,19 @@ OneRecBatchInputBuilder::OneRecBatchInputBuilder(
       args_(args),
       batch_forward_type_(batch_forward_type),
       thread_pool_(thread_pool) {
-  // Get references to function-local statics (safe initialization)
-  auto& perf_cache = get_perf_cache();
-  perf_cache.memory_pool.reset();
+  // Ensure the per-instance cache tensors are ready for use. Each builder
+  // owns its own cache so concurrent handlers (e.g. one per NPU) never
+  // share mutable cache state.
+  perf_cache_.ensure_tensors_initialized();
+  perf_cache_.memory_pool.reset();
 }
 
 ForwardInput OneRecBatchInputBuilder::build_rec_forward_input(
     uint32_t num_decoding_tokens,
     uint32_t min_decoding_batch_size) {
-  // Get reference to function-local static cache (safe initialization)
-  auto& perf_cache = get_perf_cache();
+  // Use this builder instance's private cache. See class declaration for
+  // why this must not be a process-wide singleton.
+  auto& perf_cache = perf_cache_;
 
   // ========== Global constant cache ==========
   // Note: FIXED_POSITIONS is a simple vector, safe for static initialization
@@ -592,12 +613,13 @@ ForwardInput OneRecBatchInputBuilder::build_rec_forward_input(
     if (!cache_data.encoder_seq_lens.empty()) {
       // Optimization: Pre-allocate memory and use std::memcpy to avoid clone
       // operations
-      encoder_seq_lens_tensor = torch::empty(
-          {static_cast<int64_t>(cache_data.encoder_seq_lens.size())},
-          torch::TensorOptions()
-              .dtype(torch::kInt)
-              .device(torch::kCPU)
-              .pinned_memory(true));
+      const std::vector<int64_t> encoder_seq_lens_shape{
+          static_cast<int64_t>(cache_data.encoder_seq_lens.size())};
+      encoder_seq_lens_tensor = torch::empty(encoder_seq_lens_shape,
+                                             torch::TensorOptions()
+                                                 .dtype(torch::kInt)
+                                                 .device(torch::kCPU)
+                                                 .pinned_memory(true));
       std::memcpy(encoder_seq_lens_tensor.data_ptr<int>(),
                   cache_data.encoder_seq_lens.data(),
                   cache_data.encoder_seq_lens.size() * sizeof(int));
@@ -732,12 +754,14 @@ ForwardInput OneRecBatchInputBuilder::build_rec_forward_input(
 
       // Optimization: Use torch::empty+std::memcpy instead of
       // torch::from_blob().clone()
-      onerec_params.encoder_seq_lens_tensor = torch::empty(
-          {static_cast<int64_t>(cache_data.encoder_seq_lens.size())},
-          torch::TensorOptions()
-              .dtype(torch::kInt)
-              .device(torch::kCPU)
-              .pinned_memory(true));
+      const std::vector<int64_t> encoder_seq_lens_shape{
+          static_cast<int64_t>(cache_data.encoder_seq_lens.size())};
+      onerec_params.encoder_seq_lens_tensor =
+          torch::empty(encoder_seq_lens_shape,
+                       torch::TensorOptions()
+                           .dtype(torch::kInt)
+                           .device(torch::kCPU)
+                           .pinned_memory(true));
       std::memcpy(onerec_params.encoder_seq_lens_tensor.data_ptr<int>(),
                   cache_data.encoder_seq_lens.data(),
                   cache_data.encoder_seq_lens.size() * sizeof(int));
@@ -883,8 +907,14 @@ ForwardInput OneRecBatchInputBuilder::build_rec_forward_input(
 
   onerec_params.generated_tokens = std::move(generated_tokens);
 
+  const bool cat_lock_enabled = OneRecCatLockEnabled();
+
   // Process sparse_embedding: Efficiently concatenate from cache_data
   if (!perf_cache.cache_data.encoder_sparse_embeddings.empty()) {
+    std::unique_lock<std::mutex> cat_lock;
+    if (cat_lock_enabled) {
+      cat_lock = std::unique_lock<std::mutex>(GetOneRecCatMutex());
+    }
     // Use torch::cat for efficient concatenation, concatenate along dim=0
     onerec_params.encoder_sparse_embedding =
         torch::cat(perf_cache.cache_data.encoder_sparse_embeddings, /*dim=*/0);
@@ -900,6 +930,10 @@ ForwardInput OneRecBatchInputBuilder::build_rec_forward_input(
         onerec_params.decoder_context_embedding =
             perf_cache.cache_data.decoder_context_embeddings[0];
       } else {
+        std::unique_lock<std::mutex> cat_lock;
+        if (cat_lock_enabled) {
+          cat_lock = std::unique_lock<std::mutex>(GetOneRecCatMutex());
+        }
         // Use torch::cat for efficient concatenation, concatenate along dim=0
         auto original_context_embedding = torch::cat(
             perf_cache.cache_data.decoder_context_embeddings, /*dim=*/0);

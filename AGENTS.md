@@ -49,3 +49,11 @@
 * Use the review workflow, checklist, severity rules, and output format defined in [code-review/SKILL.md](.agents/skills/code-review/SKILL.md).
 * Apply the Google C++/Python Style Guide only when the project-specific style guide does not define the rule.
 * Focus the review on the requested diff or changed files. Do not comment on unrelated code.
+
+## Build And Deploy Context
+
+* Development container name: `liuhan-xllm-so`.
+* xLLM project path: `/export/home/liuhan37/xllm-so/xllm/`.
+* Build xLLM inside the `liuhan-xllm-so` container with `compile-so.sh`.
+* Build test program inside the `liuhan-xllm-so` container with `xllm/c_api/examples/compile_and_run.sh`.
+

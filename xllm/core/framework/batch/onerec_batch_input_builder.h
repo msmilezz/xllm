@@ -112,9 +112,7 @@ class OneRecBatchInputBuilder : public RecBatchInputBuilder {
     }
   };
 
-  // Use function-local static to ensure proper initialization order
-  // (Meyers' Singleton pattern)
-  static HighPerformanceCache& get_perf_cache();
+  HighPerformanceCache perf_cache_;
 };
 
 }  // namespace xllm

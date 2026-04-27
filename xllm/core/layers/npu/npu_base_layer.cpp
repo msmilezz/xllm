@@ -22,7 +22,35 @@ limitations under the License.
 #include <torch_npu/csrc/aten/NPUNativeFunctions.h>
 #include <torch_npu/csrc/framework/utils/OpPreparation.h>
 #endif
+#include <cstdlib>
+#include <mutex>
+
 #include "core/common/global_flags.h"
+
+namespace {
+// 同进程多 handler 数据并行（每个 handler 绑一张 NPU）时，多个 worker 线程
+// 会并发调用 ATB operation->Setup / Execute。CANN 侧部分路径存在进程内共享
+// 的静态状态（tiling cache / host-buffer 分配器等），在高 QPS 下偶发
+// "onerec_decoder_block_layer execute plan fail, error code: 12"，并进一步
+// 让 torch_npu 的 Repository 进入 error 状态，最终 std::terminate。
+// 这里通过一个进程级 mutex 将 Setup + Execute 这段 host 调用序列化，避免
+// 跨 handler 竞争。对单 handler / 单进程（libxllm 原有使用方式）无影响，因为
+// 只会有一个线程进入，几乎无锁竞争开销。
+// 可通过环境变量 XLLM_DISABLE_ATB_EXECUTE_LOCK=1 关闭（用于排障或单 handler
+// 部署时的极致性能）。
+std::mutex& GetAtbExecuteMutex() {
+  static std::mutex m;
+  return m;
+}
+
+bool AtbExecuteLockEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("XLLM_DISABLE_ATB_EXECUTE_LOCK");
+    return !(env != nullptr && env[0] == '1');
+  }();
+  return enabled;
+}
+}  // namespace
 
 namespace xllm {
 namespace layer {
@@ -83,6 +111,13 @@ atb::Status BaseLayer::execute_node(atb_speed::Model::Node& node,
   if (FLAGS_enable_graph) {
     void* stream = c10_npu::getCurrentNPUStream(device_.index()).stream();
     context_->SetExecuteStream(stream);
+  }
+
+  // 同进程多 handler 跨卡并行时，将 Setup + host 侧的 run_task 调度序列化，
+  // 避免 CANN 进程内静态状态导致 execute_plan 随机失败。
+  std::unique_lock<std::mutex> atb_lock;
+  if (AtbExecuteLockEnabled()) {
+    atb_lock = std::unique_lock<std::mutex>(GetAtbExecuteMutex());
   }
   // if (FLAGS_enable_graph && !graph_captured_) {
   //   void* stream = c10_npu::getCurrentNPUStream(device_.index()).stream();

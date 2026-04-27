@@ -21,6 +21,7 @@ limitations under the License.
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <vector>
@@ -65,6 +66,18 @@ RecVocabDict* get_onerec_vocab_dict(const std::string& model_weights_path) {
   return VersionSingleton<RecVocabDict>::GetInstance(model_version);
 }
 
+#if defined(USE_NPU)
+std::mutex& get_rec_input_to_device_mutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::mutex& get_onerec_forward_mutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+#endif
+
 }  // namespace
 
 // ============================================================
@@ -91,6 +104,13 @@ void RecWorkerImpl::RecWorkPipeline::prepare_work_before_execute(
             runtime_.worker.device().index());
     lock_guard.emplace(capture_lock);
   }
+#endif
+#if defined(USE_NPU)
+  // torch_npu/ACL host-to-device copies are process-wide sensitive when two
+  // embedded REC handlers prepare OneRec inputs at the same time. Serialize the
+  // copy phase while keeping scheduler and device execution independent.
+  std::unique_lock<std::mutex> input_to_device_lock(
+      get_rec_input_to_device_mutex());
 #endif
   processed_inputs =
       inputs.to(runtime_.worker.device(), runtime_.worker.dtype());
@@ -285,7 +305,19 @@ RecWorkerImpl::OneRecWorkPipeline::OneRecWorkPipeline(
     : RecWorkPipeline(runtime),
       rec_sampler_(
           std::make_unique<RecSampler>(RecPipelineType::kOneRecDefault)),
-      filter_mask_threadpool_(std::make_unique<ThreadPool>(1)) {
+      // 绑定 filter_mask worker 线程到本 handler 对应的 NPU。多 handler 同进程
+      // 运行时，filter_mask_threadpool_ 内部会执行 safe_to(device_, true)
+      // 将 index tensor 从 host 搬到目标 NPU；若该线程未调用 set_device，
+      // 默认 current device 仍是 npu:0，handler#1 搬到 npu:1 时会触发
+      // rtMemcpyAsync failed / aicore exception。
+      filter_mask_threadpool_(std::make_unique<ThreadPool>(
+          /*num_threads=*/1,
+          /*init_func=*/[device = runtime_.worker.device_]() mutable {
+            device.set_device();
+          })) {
+  // 主线程同样需要设置 device，确保 RecConstrainedDecoding::build_mask_cache
+  // 中对 first_token_mask_ 的 safe_to(device_) 落到正确的 NPU。
+  runtime_.worker.device_.set_device();
   if (!FLAGS_enable_constrained_decoding) {
     return;
   }
@@ -382,6 +414,12 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
     const ForwardInput& input) {
   Timer timer;
   runtime_.worker.device_.set_device();
+#if defined(USE_NPU)
+  // OneRec NPU kernels and torch_npu stream synchronization touch process-wide
+  // runtime state. Keep simultaneous C API requests safe by serializing this
+  // device execution region across REC handlers in the same process.
+  std::unique_lock<std::mutex> onerec_forward_lock(get_onerec_forward_mutex());
+#endif
 
   const auto& sampling_params = input.sampling_params;
   const auto& input_params = input.input_params;
@@ -1519,8 +1557,9 @@ RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
             << options_.rec_worker_max_concurrency();
   const int64_t num_threads = std::max<int64_t>(
       1, util::get_int_env("XLLM_REC_INPUT_BUILDER_THREADS", 16));
-  input_builder_thread_pool_ =
-      std::make_shared<ThreadPool>(static_cast<size_t>(num_threads));
+  input_builder_thread_pool_ = std::make_shared<ThreadPool>(
+      static_cast<size_t>(num_threads),
+      [device = device_]() mutable { device.set_device(); });
 }
 
 RecWorkerImpl::~RecWorkerImpl() {
@@ -1725,20 +1764,52 @@ folly::SemiFuture<std::optional<ForwardOutput>> RecWorkerImpl::step_async(
   // executes (see lambda below)
   step_threadpool_->schedule_with_tid(
       [this, &input, index, promise = std::move(promise)]() mutable {
-        auto stream_guard =
-            work_pipelines_[index]->runtime().stream->set_stream_guard();
+        // 多 handler 同进程数据并行时，step_threadpool_ 线程的 current ACL
+        // device 可能被其他全局线程/回调路径（如 c10_npu 的 Repository 消费
+        // 者线程）污染。在进入 NPU kernel 下发前强制把当前线程绑回本 handler
+        // 的 device，避免 aclrtLaunchKernelWithHostArgs 返回 107003
+        // (stream not in current context) / ATB Execute 返回非零错误码。
+        device_.set_device();
 
-        ForwardInput input_on_device;
-        work_pipelines_[index]->prepare_work_before_execute(input,
-                                                            input_on_device);
+        // 双 handler 数据并行时，单次 kernel launch 偶发失败（torch_npu 的
+        // Repository::Enqueue 会抛 std::runtime_error）会穿透到 ThreadPool
+        // 顶层触发 std::terminate。这里把异常接住，只让本次请求失败，不让
+        // 进程崩溃，保证其它正在进行中的请求 / 对端长连接保持可用。
+        try {
+          auto stream_guard =
+              work_pipelines_[index]->runtime().stream->set_stream_guard();
 
-        if (hierarchy_kv_cache_transfer_ != nullptr) {
-          hierarchy_kv_cache_transfer_->set_layer_synchronizer(
-              input_on_device.input_params);
+          ForwardInput input_on_device;
+          work_pipelines_[index]->prepare_work_before_execute(input,
+                                                              input_on_device);
+
+          if (hierarchy_kv_cache_transfer_ != nullptr) {
+            hierarchy_kv_cache_transfer_->set_layer_synchronizer(
+                input_on_device.input_params);
+          }
+
+          const auto output = work_pipelines_[index]->step(input_on_device);
+          promise.setValue(output);
+        } catch (const std::exception& e) {
+          LOG(ERROR) << "RecWorkerImpl::step_async caught exception on device="
+                     << device_.index() << ", index=" << index
+                     << ", error=" << e.what()
+                     << ". Returning empty ForwardOutput to keep the process "
+                        "alive.";
+          try {
+            promise.setValue(std::nullopt);
+          } catch (...) {
+            // Promise already satisfied - ignore.
+          }
+        } catch (...) {
+          LOG(ERROR) << "RecWorkerImpl::step_async caught unknown exception on "
+                        "device="
+                     << device_.index() << ", index=" << index;
+          try {
+            promise.setValue(std::nullopt);
+          } catch (...) {
+          }
         }
-
-        const auto output = work_pipelines_[index]->step(input_on_device);
-        promise.setValue(output);
 
         index_queue_.enqueue(index);
       },
