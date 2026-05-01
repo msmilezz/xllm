@@ -41,6 +41,7 @@ limitations under the License.
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/rec_runtime_config.h"
 #if defined(USE_NPU)
 #include "platform/npu/device_capture_lock.h"
 #elif defined(USE_CUDA)
@@ -115,6 +116,14 @@ class ScopedAtenLoadThreads {
   int32_t prev_threads_ = 0;
   bool active_ = false;
 };
+
+std::unique_ptr<ScopedRecRuntimeConfig> maybe_make_rec_runtime_scope(
+    const runtime::Options& options) {
+  if (options.backend() != "rec") {
+    return nullptr;
+  }
+  return std::make_unique<ScopedRecRuntimeConfig>(options.rec_runtime_config());
+}
 
 }  // namespace
 
@@ -458,7 +467,7 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
   // asynchronously scheduled data update streams.
 
   std::optional<std::unique_lock<std::mutex>> lock_guard;
-  if (FLAGS_enable_graph) {
+  if (get_rec_runtime_enable_graph()) {
     auto& capture_lock =
         ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(
             device_.index());
@@ -754,6 +763,8 @@ folly::SemiFuture<bool> WorkerImpl::init_model_async(
 }
 
 bool WorkerImpl::sleep(MasterStatus master_status) {
+  std::unique_ptr<ScopedRecRuntimeConfig> rec_runtime_scope =
+      maybe_make_rec_runtime_scope(options_);
   // The memory for kvcache and model weights from hbm is released by xtensor;
   if (master_status == MasterStatus::LIGHT_SLEEP) {
     // only load model weights to host memory.
@@ -780,6 +791,8 @@ bool WorkerImpl::wakeup(const WakeupOptions& options) {
 }
 
 bool WorkerImpl::wakeup_local(const WakeupOptions& options) {
+  std::unique_ptr<ScopedRecRuntimeConfig> rec_runtime_scope =
+      maybe_make_rec_runtime_scope(options_);
   if (options.master_status == MasterStatus::LIGHT_SLEEP) {
 #if defined(USE_NPU)
     if (FLAGS_enable_rolling_load && !is_spec_draft_) {
@@ -876,6 +889,8 @@ bool WorkerImpl::wakeup_from_remote_weights(const WakeupOptions& options) {
 bool WorkerImpl::init_model(const std::string& model_weights_path,
                             int32_t random_seed,
                             MasterStatus master_status) {
+  std::unique_ptr<ScopedRecRuntimeConfig> rec_runtime_scope =
+      maybe_make_rec_runtime_scope(options_);
   // set same random seed for all worker
   FLAGS_random_seed = random_seed;
   device_.set_seed(random_seed);

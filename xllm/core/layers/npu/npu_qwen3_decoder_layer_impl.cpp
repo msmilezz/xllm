@@ -21,6 +21,7 @@ limitations under the License.
 #include <map>
 
 #include "common/global_flags.h"
+#include "common/rec_runtime_config.h"
 #include "util/rec_model_utils.h"
 
 // #include "attn_mask.h"
@@ -48,7 +49,7 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
   param.rmsnormQKNorm = true;
   param.isPrefill = isPrefill;
   param.isBF16 = args.dtype() == "bfloat16";
-  param.enableSplitFuse = FLAGS_enable_chunked_prefill && isPrefill;
+  param.enableSplitFuse = get_rec_runtime_enable_chunked_prefill() && isPrefill;
   param.loraEnableGMM = false;
   param.enableXattention = is_rec_multi_round_mode();
 
@@ -78,7 +79,8 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
   param.enableIntraLayerAddNorm = true;
   param.enableInterLayerAddNorm = false;
   param.enablePreFetchWeight = FLAGS_enable_prefetch_weight;
-  param.enableAclGraphPagedAttention = FLAGS_enable_graph && !isPrefill;
+  param.enableAclGraphPagedAttention =
+      get_rec_runtime_enable_graph() && !isPrefill;
   initialize_parallel_parameters(param, parallel_args);
   initialize_quantization_parameters(param);
 
@@ -88,14 +90,14 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
             ? false
             : quantize_type_.empty();
     // for prefix cache without chunked prefill.
-    if (FLAGS_enable_prefix_cache && !FLAGS_enable_chunked_prefill &&
-        FLAGS_block_size != 128) {
+    if (get_rec_runtime_enable_prefix_cache() &&
+        !get_rec_runtime_enable_chunked_prefill() && FLAGS_block_size != 128) {
       LOG(ERROR) << "try to enable prefix cache without chunked prefill but "
                     "failed, because the block_size is required to be 128.";
     }
-    param.isPrefixCacheWithoutChunk = FLAGS_enable_prefix_cache &&
-                                      !FLAGS_enable_chunked_prefill &&
-                                      FLAGS_block_size == 128;
+    param.isPrefixCacheWithoutChunk =
+        get_rec_runtime_enable_prefix_cache() &&
+        !get_rec_runtime_enable_chunked_prefill() && FLAGS_block_size == 128;
   }
 }
 
@@ -334,15 +336,15 @@ void NpuQwen3DecoderLayerImpl::build_node_variant_pack(
         atb_speed::Utils::AtTensor2Tensor(input_params.new_cache_slots);
   }
 
-  if (is_prefill &&
-      (FLAGS_enable_chunked_prefill || FLAGS_enable_prefix_cache)) {
+  if (is_prefill && (get_rec_runtime_enable_chunked_prefill() ||
+                     get_rec_runtime_enable_prefix_cache())) {
     node.variantPack.inTensors.at(input_idx++) =
         atb_speed::Utils::AtTensor2Tensor(input_params.q_seq_lens);
     node.variantPack.inTensors.at(input_idx - 1).hostData =
         input_params.q_seq_lens_vec.data();
   }
 
-  if (FLAGS_enable_graph && !is_prefill &&
+  if (get_rec_runtime_enable_graph() && !is_prefill &&
       input_params.graph_buffer.tiling_data.defined()) {
     node.variantPack.inTensors.at(input_idx++) =
         atb_speed::Utils::AtTensor2Tensor(

@@ -25,6 +25,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/rec_runtime_config.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/parallel_state/parallel_state.h"
@@ -74,6 +75,7 @@ bool RecEngine::init() {
 }
 
 bool RecEngine::init_model() {
+  ScopedRecRuntimeConfig rec_runtime_scope(options_.rec_runtime_config());
   const std::string& model_path = options_.model_path();
   auto model_loader = ModelLoader::create(model_path);
 
@@ -87,7 +89,8 @@ bool RecEngine::init_model() {
   rec_model_kind_ = get_rec_model_kind(args_.model_type());
   CHECK(rec_model_kind_ != RecModelKind::kNone)
       << "Unsupported rec model_type: " << args_.model_type();
-  auto pipeline_type = get_rec_pipeline_type(rec_model_kind_);
+  auto pipeline_type =
+      get_rec_pipeline_type(rec_model_kind_, options_.rec_runtime_config());
   pipeline_ = create_pipeline(pipeline_type, *this);
   // LlmRec-specific initialization
   if (rec_model_kind_ == RecModelKind::kLlmRec) {
@@ -198,6 +201,7 @@ bool RecEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
 }
 
 ForwardOutput RecEngine::step(std::vector<Batch>& batches) {
+  ScopedRecRuntimeConfig rec_runtime_scope(options_.rec_runtime_config());
   return pipeline_->step(batches);
 }
 

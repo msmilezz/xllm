@@ -16,6 +16,7 @@ limitations under the License.
 #include "executor.h"
 
 #include "common/global_flags.h"
+#include "common/rec_runtime_config.h"
 #include "executor_impl_factory.h"
 #include "platform/device.h"
 
@@ -25,9 +26,10 @@ Executor::Executor(CausalLM* model,
                    const ModelArgs& args,
                    const torch::Device& device,
                    const runtime::Options& options) {
-  std::string backend = (options.backend() != "vlm" && FLAGS_enable_graph)
-                            ? Device::type_str()
-                            : options.backend();
+  std::string backend =
+      (options.backend() != "vlm" && get_rec_runtime_enable_graph())
+          ? Device::type_str()
+          : options.backend();
   impl_ = ExecutorImplFactory::get_instance().create_executor_impl(
       model, args, device, options, backend);
 }

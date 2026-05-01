@@ -23,6 +23,7 @@ limitations under the License.
 #include <set>
 
 #include "common/global_flags.h"
+#include "common/rec_runtime_config.h"
 namespace xllm {
 namespace layer {
 namespace {
@@ -604,7 +605,7 @@ NpuOneRecBlockLayerImpl::NpuOneRecBlockLayerImpl(const ModelContext& context,
   param_from_args(prefill_param_atb_, args, parallel_args, /*is_prefill=*/true);
   prefill_param_atb_.matmulBackend = atb_speed::common::OpBackend::ATB;
   param_from_args(decode_param_, args, parallel_args, /*is_prefill=*/false);
-  if (FLAGS_enable_rec_prefill_only && is_decoder_) {
+  if (get_rec_runtime_enable_prefill_only() && is_decoder_) {
     param_from_args(decoder_prefill_only_decode_param_,
                     args,
                     parallel_args,
@@ -665,7 +666,8 @@ void NpuOneRecBlockLayerImpl::param_from_args(
   param.enableSwiGLUQuantForSharedExperts = false;
   param.supportLcoc = is_prefill;
   param.supportSpeculate = false;
-  param.enableSplitFuse = FLAGS_enable_chunked_prefill && is_prefill;
+  param.enableSplitFuse =
+      get_rec_runtime_enable_chunked_prefill() && is_prefill;
   param.supportLora = false;
   param.loraEnableGMM = false;
   param.enableLogN = false;
@@ -674,7 +676,7 @@ void NpuOneRecBlockLayerImpl::param_from_args(
   param.enableInterLayerAddNorm = false;
   param.isDecoder = is_decoder_;
   param.isOneRecEncoder = !is_decoder_;
-  param.enableOneRecPrefillOnly = FLAGS_enable_rec_prefill_only;
+  param.enableOneRecPrefillOnly = get_rec_runtime_enable_prefill_only();
   param.backend = FLAGS_communication_backend;
   param.matmulBackend = kEnableOneRecAclnnAttentionLinear
                             ? atb_speed::common::OpBackend::ACLNN
@@ -1157,7 +1159,7 @@ int64_t NpuOneRecBlockLayerImpl::init_layer() {
         init_node(prefill_node_atb_, prefill_param_atb_));
   }
   if (is_decoder_) {
-    if (FLAGS_enable_rec_prefill_only) {
+    if (get_rec_runtime_enable_prefill_only()) {
       CHECK_OPERATION_STATUS_RETURN(
           init_node(decoder_prefill_only_decode_node_,
                     decoder_prefill_only_decode_param_));
@@ -1251,7 +1253,7 @@ torch::Tensor NpuOneRecBlockLayerImpl::forward(
   atb::Status st;
   if (is_prefill) {
     if (is_decoder_) {
-      if (FLAGS_enable_rec_prefill_only) {
+      if (get_rec_runtime_enable_prefill_only()) {
         if (is_first_prefill && encoder_output != nullptr) {
           const int64_t bs = encoder_output->size(0);
           const int64_t seq_len = encoder_output->size(1);
@@ -1467,7 +1469,7 @@ void NpuOneRecBlockLayerImpl::build_decoder_moe_node_variant_pack(
       attn_mask,
       kv_cache,
       input_params,
-      (FLAGS_enable_rec_prefill_only && is_prefill && !is_first_prefill)
+      (get_rec_runtime_enable_prefill_only() && is_prefill && !is_first_prefill)
           ? decoder_prefill_only_decode_param_
           : (is_prefill ? prefill_param_ : decode_param_),
       is_first_prefill,
@@ -1664,7 +1666,7 @@ void NpuOneRecBlockLayerImpl::build_decoder_node_variant_pack(
       attn_mask,
       kv_cache,
       input_params,
-      (FLAGS_enable_rec_prefill_only && is_prefill && !is_first_prefill)
+      (get_rec_runtime_enable_prefill_only() && is_prefill && !is_first_prefill)
           ? decoder_prefill_only_decode_param_
           : (is_prefill ? prefill_param_ : decode_param_),
       is_first_prefill,

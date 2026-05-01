@@ -6,6 +6,7 @@
 #include <fstream>
 
 #include "common/global_flags.h"
+#include "common/rec_runtime_config.h"
 #include "util/timer.h"
 
 namespace xllm {
@@ -51,7 +52,7 @@ bool RecVocabDict::initialize(const std::string& vocab_file) {
 
   while (ifs.read(reinterpret_cast<char*>(&item_id), itemid_size) &&
          ifs.read(reinterpret_cast<char*>(tokens.data()), tokens_size)) {
-    if (FLAGS_enable_constrained_decoding) {
+    if (get_rec_runtime_enable_constrained_decoding()) {
       for (int i = 0; i < tokens.size(); i++) {
         std::vector<int32_t> prefix_tokens;
 
