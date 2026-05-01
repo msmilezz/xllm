@@ -89,6 +89,11 @@ bool RecEngine::init_model() {
   rec_model_kind_ = get_rec_model_kind(args_.model_type());
   CHECK(rec_model_kind_ != RecModelKind::kNone)
       << "Unsupported rec model_type: " << args_.model_type();
+  if (rec_model_kind_ == RecModelKind::kOneRec &&
+      !onerec_batch_input_builder_cache_) {
+    onerec_batch_input_builder_cache_ =
+        std::make_unique<OneRecBatchInputBuilderCache>();
+  }
   auto pipeline_type =
       get_rec_pipeline_type(rec_model_kind_, options_.rec_runtime_config());
   pipeline_ = create_pipeline(pipeline_type, *this);
@@ -641,9 +646,14 @@ ForwardOutput RecEngine::OneRecEnginePipeline::step(
   if (engine_.workers_.empty()) {
     return {};
   }
+  CHECK(engine_.onerec_batch_input_builder_cache_ != nullptr)
+      << "OneRec batch cache is not initialized.";
+  CHECK(!batches.empty()) << "OneRec engine requires at least one batch.";
 
   Timer timer;
   // OneRec does not need refresh_forward_type
+  batches[0].set_onerec_batch_input_builder_cache(
+      engine_.onerec_batch_input_builder_cache_.get());
   auto forward_inputs = engine_.workers_[0]->prepare_inputs(batches[0]);
   COUNTER_ADD(prepare_input_latency_microseconds, timer.elapsed_microseconds());
 
@@ -664,6 +674,8 @@ ForwardOutput RecEngine::OneRecEnginePipeline::step(
   for (size_t i = 0; i < kRecDecodeSteps; ++i) {
     timer.reset();
     // OneRec does not need refresh_forward_type
+    batches[0].set_onerec_batch_input_builder_cache(
+        engine_.onerec_batch_input_builder_cache_.get());
     forward_inputs = engine_.workers_[0]->prepare_inputs(batches[0]);
     COUNTER_ADD(prepare_input_latency_microseconds,
                 timer.elapsed_microseconds());

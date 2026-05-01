@@ -36,7 +36,8 @@ std::unique_ptr<RecBatchInputBuilder> RecBatchInputBuilder::create(
     uint64_t batch_id,
     const ModelArgs* args,
     BatchForwardType batch_forward_type,
-    ThreadPool* thread_pool) {
+    ThreadPool* thread_pool,
+    OneRecBatchInputBuilderCache* onerec_cache) {
   switch (rec_type) {
     case RecType::kOneRec:
       return std::make_unique<OneRecBatchInputBuilder>(
@@ -48,7 +49,8 @@ std::unique_ptr<RecBatchInputBuilder> RecBatchInputBuilder::create(
           batch_id,
           args,
           batch_forward_type,
-          thread_pool);
+          thread_pool,
+          onerec_cache);
     case RecType::kLlmRec:
       // Check if Rec multi-round mode is enabled
       if (is_rec_multi_round_mode()) {
