@@ -22,6 +22,7 @@ limitations under the License.
 #include <map>
 
 #include "common/global_flags.h"
+#include "common/rec_runtime_config.h"
 
 // #include "attn_mask.h"
 #include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"
@@ -104,7 +105,7 @@ void NpuQwen2DecoderLayerImpl::param_from_args(
   param.supportSwiGLU = true;
   param.supportLcoc = isPrefill;  // isPrefill
   param.supportSpeculate = false;
-  param.enableSplitFuse = FLAGS_enable_chunked_prefill && isPrefill;
+  param.enableSplitFuse = get_rec_runtime_enable_chunked_prefill() && isPrefill;
   param.supportLora = false;
   param.loraEnableGMM = false;
   param.packQuantType = {1, 1};
@@ -321,7 +322,7 @@ void NpuQwen2DecoderLayerImpl::build_node_variant_pack(
       atb_speed::Utils::AtTensor2Tensor(input_params.block_tables);
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 10) =
       atb_speed::Utils::AtTensor2Tensor(input_params.new_cache_slots);
-  if (is_prefill && FLAGS_enable_chunked_prefill) {
+  if (is_prefill && get_rec_runtime_enable_chunked_prefill()) {
     node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 11) =
         atb_speed::Utils::AtTensor2Tensor(input_params.q_seq_lens);
     node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 11).hostData =

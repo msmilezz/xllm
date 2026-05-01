@@ -4,6 +4,7 @@ cc_test(
   NAME
     common_test
   SRCS
+    rec_runtime_config_test.cpp
     rate_limiter_test.cpp
   DEPS
     common

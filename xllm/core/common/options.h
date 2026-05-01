@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "common/macros.h"
+#include "common/rec_runtime_config.h"
 #include "common/types.h"
 
 namespace xllm {
@@ -243,6 +244,9 @@ class Options {
 
   // max concurrency for rec worker
   PROPERTY(int32_t, rec_worker_max_concurrency) = 1;
+
+  // rec runtime toggles that must be isolated per in-process handler.
+  PROPERTY(RecRuntimeConfig, rec_runtime_config) = RecRuntimeConfig();
 
   PROPERTY(MasterStatus, master_status) = MasterStatus::WAKEUP;
 };

@@ -23,6 +23,7 @@ limitations under the License.
 #include <set>
 
 #include "common/global_flags.h"
+#include "common/rec_runtime_config.h"
 #include "core/util/rec_model_utils.h"
 namespace xllm {
 namespace layer {
@@ -730,7 +731,8 @@ void NpuOneRecBlockLayerImpl::param_from_args(
   param.enableSwiGLUQuantForSharedExperts = false;
   param.supportLcoc = is_prefill;
   param.supportSpeculate = false;
-  param.enableSplitFuse = FLAGS_enable_chunked_prefill && is_prefill;
+  param.enableSplitFuse =
+      get_rec_runtime_enable_chunked_prefill() && is_prefill;
   param.supportLora = false;
   param.loraEnableGMM = false;
   param.enableLogN = false;

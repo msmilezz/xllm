@@ -11,6 +11,7 @@ cc_library(
     macros.h
     message.h
     metrics.h
+    rec_runtime_config.h
     $<$<BOOL:${USE_NPU}>:mspti_helper.h>
     options.h
     rate_limiter.h
@@ -21,6 +22,7 @@ cc_library(
     etcd_client.cpp
     global_flags.cpp
     metrics.cpp
+    rec_runtime_config.cpp
     $<$<BOOL:${USE_NPU}>:mspti_helper.cpp>
     options.cpp
     rate_limiter.cpp

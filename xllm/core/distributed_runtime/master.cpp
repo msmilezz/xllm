@@ -352,6 +352,21 @@ Master::Master(const Options& options, EngineType type)
     options_.enable_schedule_overlap(false);
     LOG(WARNING) << "Force to disable schedule overlap for REC model, not "
                     "supported yet.";
+    RecRuntimeConfig rec_runtime_config = options_.rec_runtime_config();
+    rec_runtime_config.enable_prefix_cache = options_.enable_prefix_cache();
+    rec_runtime_config.enable_schedule_overlap =
+        options_.enable_schedule_overlap();
+    rec_runtime_config.enable_chunked_prefill =
+        options_.enable_chunked_prefill();
+    rec_runtime_config.enable_graph = options_.enable_graph();
+    rec_runtime_config.block_size = options_.block_size();
+    rec_runtime_config.max_tokens_per_batch = options_.max_tokens_per_batch();
+    rec_runtime_config.max_seqs_per_batch = options_.max_seqs_per_batch();
+    rec_runtime_config.rec_worker_max_concurrency =
+        options_.rec_worker_max_concurrency();
+    rec_runtime_config.beam_width = options_.beam_width();
+    options_.rec_runtime_config(rec_runtime_config);
+
     runtime::Options eng_options;
     eng_options.model_path(options_.model_path())
         .devices(devices)
@@ -381,7 +396,8 @@ Master::Master(const Options& options, EngineType type)
         .enable_graph(options_.enable_graph())
         .max_tokens_per_chunk_for_prefill(
             options_.max_tokens_per_chunk_for_prefill())
-        .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
+        .rec_worker_max_concurrency(options_.rec_worker_max_concurrency())
+        .rec_runtime_config(options_.rec_runtime_config());
 
     engine_ = std::make_unique<RecEngine>(eng_options);
   } else if (type == EngineType::DIT) {

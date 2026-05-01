@@ -16,10 +16,10 @@ cc_library(
     utils.cpp
     rec_vocab_dict.cpp
   DEPS
+    common
     rust_safetensors
     torch
     glog::glog
     Folly::folly
     util
 )
-

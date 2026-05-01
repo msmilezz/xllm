@@ -27,6 +27,7 @@ limitations under the License.
 #include "c_api/default.h"
 #include "c_api/types.h"
 #include "core/common/instance_name.h"
+#include "core/common/rec_runtime_config.h"
 #include "core/distributed_runtime/llm_master.h"
 #include "core/distributed_runtime/rec_master.h"
 #include "core/framework/request/request_output.h"
@@ -68,6 +69,9 @@ struct XLLM_REC_Handler {
 
   /** Thread pool for asynchronous recommendation task scheduling */
   std::unique_ptr<folly::CPUThreadPoolExecutor> executor;
+
+  /** Runtime toggles that must stay private to this handler instance */
+  xllm::RecRuntimeConfig runtime_config;
 };
 
 namespace xllm {
