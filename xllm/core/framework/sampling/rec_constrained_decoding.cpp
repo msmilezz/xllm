@@ -29,8 +29,6 @@ limitations under the License.
 #include "common/global_flags.h"
 #include "framework/state_dict/rec_vocab_dict.h"
 #include "util/slice.h"
-#include "util/tensor_helper.h"
-
 namespace xllm {
 RecConstrainedDecoding::RecConstrainedDecoding(RecVocabDict* vocab_dict,
                                                const int32_t vocab_size,
@@ -52,7 +50,12 @@ RecConstrainedDecoding::RecConstrainedDecoding(RecVocabDict* vocab_dict,
 bool RecConstrainedDecoding::build_mask_cache() {
   CHECK(vocab_dict_ != nullptr)
       << "RecVocabDict must be initialized before constrained decoding.";
-  first_token_mask_ = torch::full({vocab_size_}, PRE_MASK_FACTOR, dtype_);
+  first_token_mask_ = torch::full({vocab_size_},
+                                  PRE_MASK_FACTOR,
+                                  torch::TensorOptions()
+                                      .dtype(dtype_)
+                                      .device(torch::kCPU)
+                                      .pinned_memory(true));
 
   std::vector<int32_t> empty_token_ids;
   Slice<int32_t> prefix_token_ids = {empty_token_ids.data(),
@@ -64,8 +67,6 @@ bool RecConstrainedDecoding::build_mask_cache() {
   for (auto token_id : first_token_ids) {
     first_token_mask_[token_id] = 0;
   }
-
-  first_token_mask_ = safe_to(first_token_mask_, device_, true);
 
   build_mask_cache_ = true;
 
@@ -97,7 +98,10 @@ torch::Tensor RecConstrainedDecoding::generate_mask(
 torch::Tensor RecConstrainedDecoding::generate_decode_mask(
     const std::vector<std::vector<int32_t>>& generated_token_list) {
   size_t sequence_num = generated_token_list.size();
-  torch::TensorOptions options = torch::dtype(dtype_).device(device_);
+  torch::TensorOptions options = torch::TensorOptions()
+                                     .dtype(dtype_)
+                                     .device(torch::kCPU)
+                                     .pinned_memory(true);
   auto mask = torch::full({static_cast<int64_t>(sequence_num), vocab_size_},
                           PRE_MASK_FACTOR,
                           options);
@@ -182,8 +186,6 @@ torch::Tensor RecConstrainedDecoding::generate_decode_mask(
         torch::tensor(global_batch_token_indices, torch::kInt64);
     auto vocab_indices =
         torch::tensor(global_batch_vocab_indices, torch::kInt64);
-    token_indices = safe_to(token_indices, device_, true);
-    vocab_indices = safe_to(vocab_indices, device_, true);
     mask.index_put_({token_indices, vocab_indices}, 0.0f);
   }
 

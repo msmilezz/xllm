@@ -40,6 +40,7 @@ limitations under the License.
 #include "framework/xtensor/xtensor.h"
 #include "loader/base_loader.h"
 #include "loader/base_manual_loader.h"
+#include "operations/aclnn/core/acl_nn_cache_scope.h"
 #include "platform/device.h"
 #include "pytorch/adapter/utils/utils.h"
 #include "pytorch/adapter/workspace/workspace.h"
@@ -224,6 +225,7 @@ class BaseLayer : public torch::nn::Module {
   atb::Context* context_;
   std::shared_ptr<AtbWorkspace> work_space_ = nullptr;
   std::vector<atb::Tensor> atb_weight_tensors_;
+  std::string cache_namespace_;
   bool graph_captured_{false};
 };
 

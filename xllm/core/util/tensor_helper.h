@@ -27,6 +27,8 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
+#include "util/env_var.h"
+
 namespace xllm {
 
 template <typename T>
@@ -58,7 +60,11 @@ inline torch::Tensor create_2d_tensor(const std::vector<std::vector<T> >& vec,
 inline torch::Tensor safe_to(const torch::Tensor& t,
                              const torch::TensorOptions& options,
                              bool non_blocking = false) {
-  return t.defined() ? t.to(options, non_blocking) : t;
+  const bool disable_non_blocking =
+      util::get_bool_env("XLLM_DEBUG_DISABLE_NON_BLOCKING_TO", false);
+  return t.defined()
+             ? t.to(options, disable_non_blocking ? false : non_blocking)
+             : t;
 };
 
 inline std::vector<char> get_the_bytes(std::string filename) {

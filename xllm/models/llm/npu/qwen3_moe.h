@@ -15,6 +15,7 @@ limitations under the License.
 
 #pragma once
 
+#include "core/common/rec_runtime_config.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model/npu_dp_ep_padding.h"
 #include "core/framework/model_context.h"
@@ -143,7 +144,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
         options);
 
     atb_pos_emb_ = layer::NpuPosEmbedding(context);
-    int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
+    int32_t mask_value = get_rec_runtime_enable_chunked_prefill() ? -9984 : 1;
     attn_mask_ = layer::AttentionMask(options.device(),
                                       options.dtype().toScalarType(),
                                       /*mask_value=*/mask_value);
@@ -181,8 +182,8 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
       const size_t num_captured = layers_to_capture_set_.size();
       const int64_t aux_dim =
           model_args.hidden_size() * static_cast<int64_t>(num_captured);
-      aux_output_buffer_ =
-          torch::empty({FLAGS_max_tokens_per_batch, aux_dim}, options);
+      aux_output_buffer_ = torch::empty(
+          {get_rec_runtime_max_tokens_per_batch(), aux_dim}, options);
     }
   }
 
@@ -276,10 +277,10 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     torch::Tensor attn_mask;
     // for chunked prefill, generate the attn mask.
     if (!input_params.batch_forward_type.is_decode()) {
-      max_seq_len_ = FLAGS_enable_chunked_prefill
+      max_seq_len_ = get_rec_runtime_enable_chunked_prefill()
                          ? std::max(input_params.kv_max_seq_len, max_seq_len_)
                          : 128;
-      if (FLAGS_enable_chunked_prefill) {
+      if (get_rec_runtime_enable_chunked_prefill()) {
         attn_mask = attn_mask_.get_attn_mask(
             max_seq_len_, cos_pos.dtype().toScalarType(), cos_pos.device());
 

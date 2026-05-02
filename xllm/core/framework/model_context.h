@@ -90,12 +90,18 @@ class ModelContext {
   const std::string& get_model_id() const { return model_id_; }
   void set_model_id(const std::string& model_id) { model_id_ = model_id; }
 
+  const std::string& get_cache_namespace() const { return cache_namespace_; }
+  void set_cache_namespace(const std::string& cache_namespace) {
+    cache_namespace_ = cache_namespace;
+  }
+
  private:
   // derive optimization config based on model args, quant args and other
   // factors
   void derive_optimization_config();
 
   std::string model_id_;  // Model identifier for XTensor multi-model support
+  std::string cache_namespace_;
   ModelArgs model_args_;
   QuantArgs quant_args_;
   ParallelArgs parallel_args_;

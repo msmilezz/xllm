@@ -18,6 +18,7 @@ limitations under the License.
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 
 #include "core/common/global_flags.h"
+#include "core/common/rec_runtime_config.h"
 #include "core/layers/common/rms_norm.h"
 #include "core/layers/npu/npu_onerec_block_layer_impl.h"
 
@@ -427,7 +428,7 @@ class OneRecStackImpl : public torch::nn::Module {
                                    ? layer_position_bias
                                    : layer_position_bias.contiguous();
 
-    if (is_decoder_ && FLAGS_enable_rec_prefill_only) {
+    if (is_decoder_ && get_rec_runtime_enable_prefill_only()) {
       const float mask_value = -9984.0f;
       auto upper_tri_mask =
           torch::triu(torch::ones({query_length, query_length},

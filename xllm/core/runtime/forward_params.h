@@ -34,6 +34,7 @@ limitations under the License.
 #include "framework/sampling/sampling_params.h"
 #include "platform/device.h"
 #include "runtime/dit_forward_params.h"
+#include "util/env_var.h"
 
 namespace xllm {
 
@@ -122,7 +123,15 @@ struct StepDecodeMeta {
 struct ForwardInput {
   ForwardInput to(const torch::Device& device, torch::ScalarType dtype) const {
     ForwardInput inputs;
-    inputs.token_ids = safe_to(token_ids, device, true);
+    const bool clone_token_ids_before_h2d =
+        util::get_bool_env("XLLM_DEBUG_TOKEN_IDS_CLONE_CPU_BEFORE_H2D", false);
+    const bool block_token_ids_h2d =
+        util::get_bool_env("XLLM_DEBUG_TOKEN_IDS_BLOCKING_H2D", false);
+    torch::Tensor token_ids_to_copy = token_ids;
+    if (clone_token_ids_before_h2d && token_ids_to_copy.defined()) {
+      token_ids_to_copy = token_ids_to_copy.contiguous().clone();
+    }
+    inputs.token_ids = safe_to(token_ids_to_copy, device, !block_token_ids_h2d);
     inputs.positions = safe_to(positions, device, true);
     // Convert positions to int64 on CUDA/ILU/MUSA to avoid repeated per-layer
     // type conversions in rope kernels.

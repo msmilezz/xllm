@@ -24,6 +24,7 @@ limitations under the License.
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 
@@ -352,24 +353,56 @@ void FixedStepsScheduler::step(const absl::Duration& timeout) {
                      batches = std::move(result.batches),
                      requests = std::move(result.requests),
                      sequences = std::move(result.sequences)]() mutable {
-      engine_->step(batches);
-      kv_cache_manager_->reset_transfer_infos();
+      try {
+        engine_->step(batches);
+        kv_cache_manager_->reset_transfer_infos();
 
-      // After step completes, check and process finished/cancelled requests
-      std::vector<std::shared_ptr<Request>> finished_requests;
-      for (auto& request : requests) {
-        if (request) {
-          request->update_connection_status();
-          if (request->finished() || request->cancelled()) {
-            kv_cache_manager_->deallocate(request.get());
-            finished_requests.emplace_back(request);
+        // After step completes, check and process finished/cancelled requests
+        std::vector<std::shared_ptr<Request>> finished_requests;
+        for (auto& request : requests) {
+          if (request) {
+            request->update_connection_status();
+            if (request->finished() || request->cancelled()) {
+              kv_cache_manager_->deallocate(request.get());
+              finished_requests.emplace_back(request);
+            }
           }
         }
-      }
 
-      // Process finished requests
-      if (!finished_requests.empty()) {
-        response_processor_->process_completed_requests(finished_requests);
+        // Process finished requests
+        if (!finished_requests.empty()) {
+          response_processor_->process_completed_requests(finished_requests);
+        }
+      } catch (const std::exception& e) {
+        kv_cache_manager_->reset_transfer_infos();
+        LOG(ERROR) << "FixedStepsScheduler step failed: " << e.what();
+        for (auto& request : requests) {
+          if (!request) {
+            continue;
+          }
+          if (scheduler_pipeline_->requires_kv_cache()) {
+            kv_cache_manager_->deallocate(request.get());
+          }
+          response_processor_->process_failed_request(
+              request,
+              Status(StatusCode::UNKNOWN,
+                     "REC engine step failed: " + std::string(e.what())));
+        }
+      } catch (...) {
+        kv_cache_manager_->reset_transfer_infos();
+        LOG(ERROR) << "FixedStepsScheduler step failed: unknown exception";
+        for (auto& request : requests) {
+          if (!request) {
+            continue;
+          }
+          if (scheduler_pipeline_->requires_kv_cache()) {
+            kv_cache_manager_->deallocate(request.get());
+          }
+          response_processor_->process_failed_request(
+              request,
+              Status(StatusCode::UNKNOWN,
+                     "REC engine step failed: unknown exception"));
+        }
       }
 
       if (options_.rec_worker_max_concurrency() > 1) {

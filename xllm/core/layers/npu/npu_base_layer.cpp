@@ -56,12 +56,14 @@ BaseLayer::BaseLayer(const ModelContext& context)
 
   context_ = const_cast<atb::Context*>(context.get_atb_context());
   work_space_ = context.get_atb_workspace();
+  cache_namespace_ = context.get_cache_namespace();
 }
 
 atb::Status BaseLayer::execute_node(atb_speed::Model::Node& node,
                                     int node_id,
                                     aclrtEvent* event,
                                     std::atomic<bool>* event_flag) {
+  Device(device_).set_device();
   // TODO: Stream management needs to be refactored
   // for better separation of concerns Current issues:
   // 1. ACLGraph capture requires execution on a non-default stream, so we
@@ -85,6 +87,7 @@ atb::Status BaseLayer::execute_node(atb_speed::Model::Node& node,
     void* stream = c10_npu::getCurrentNPUStream(device_.index()).stream();
     context_->SetExecuteStream(stream);
   }
+  atb_speed::common::AclNNCacheScope::Guard cache_scope(cache_namespace_);
   // if (FLAGS_enable_graph && !graph_captured_) {
   //   void* stream = c10_npu::getCurrentNPUStream(device_.index()).stream();
   //   aclmdlRICaptureStatus status;
@@ -122,6 +125,7 @@ atb::Status BaseLayer::execute_plan(const atb_speed::Model::Node& node,
                                     const std::string& op_name,
                                     aclrtEvent* event,
                                     std::atomic<bool>* event_flag) {
+  Device(device_).set_device();
   atb::Status st = node.operation->Execute(
       node.variantPack, (uint8_t*)node.workspace, node.workspaceSize, context_);
   LOG_IF(ERROR, st != 0) << name_ << " execute plan fail, error code: " << st;

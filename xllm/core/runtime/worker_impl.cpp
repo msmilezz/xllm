@@ -16,6 +16,7 @@ limitations under the License.
 #include "worker_impl.h"
 
 #include <ATen/Parallel.h>
+#include <folly/ExceptionWrapper.h>
 #include <folly/Unit.h>
 #include <folly/futures/Future.h>
 #include <gflags/gflags.h>
@@ -31,8 +32,10 @@ limitations under the License.
 #endif
 
 #include <algorithm>
+#include <exception>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -123,6 +126,25 @@ std::unique_ptr<ScopedRecRuntimeConfig> maybe_make_rec_runtime_scope(
     return nullptr;
   }
   return std::make_unique<ScopedRecRuntimeConfig>(options.rec_runtime_config());
+}
+
+std::string build_aclnn_cache_namespace(const runtime::Options& options,
+                                        const torch::Device& device) {
+  std::string base_namespace = options.instance_name().value_or("");
+  if (base_namespace.empty()) {
+    if (!options.model_id().empty()) {
+      base_namespace = options.model_id();
+    } else if (!options.model_path().empty()) {
+      base_namespace = options.model_path();
+    } else {
+      base_namespace = "xllm";
+    }
+  }
+
+  std::stringstream ss;
+  ss << base_namespace << "|server_idx=" << options.server_idx()
+     << "|device=" << device.index();
+  return ss.str();
 }
 
 }  // namespace
@@ -678,44 +700,56 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
   threadpool_.schedule([this,
                         input = std::move(input_on_device),
                         promise = std::move(promise)]() mutable {
-    if (hierarchy_kv_cache_transfer_ != nullptr) {
-      hierarchy_kv_cache_transfer_->set_layer_synchronizer(input.input_params);
-    }
-
-    // run the model on the given input in working thread
-    if (!enable_schedule_overlap()) {
-      const auto output = this->step(input);
-      promise.setValue(output);
-    } else {
-      if (last_step_output_valid_ && input.token_ids.numel() > 0 &&
-          input.input_params.batch_forward_type.has_decode()) {
-        // replace step i model input with true output of step i-1
-        input = update_input_by_last_step_output(input);
+    try {
+      if (hierarchy_kv_cache_transfer_ != nullptr) {
+        hierarchy_kv_cache_transfer_->set_layer_synchronizer(
+            input.input_params);
       }
 
-      const auto output = this->step(input);
-      if (output.has_value()) {
-        if (is_driver() || FLAGS_enable_eplb) {
-          std::unique_lock<std::mutex> lock(mtx_);
-          cv_.wait(lock, [this] { return !is_recorded_; });
-          update_last_step_output(output);
-          is_recorded_ = true;
-          cv_.notify_one();
-        } else {
-          update_last_step_output(output);
-        }
+      // run the model on the given input in working thread
+      if (!enable_schedule_overlap()) {
+        const auto output = this->step(input);
+        promise.setValue(output);
       } else {
-        if (is_driver() || FLAGS_enable_eplb) {
-          std::unique_lock<std::mutex> lock(mtx_);
-          cv_.wait(lock, [this] { return !is_recorded_; });
-          last_step_output_valid_ = false;
-          is_recorded_ = true;
-          cv_.notify_one();
-        } else {
-          last_step_output_valid_ = false;
+        if (last_step_output_valid_ && input.token_ids.numel() > 0 &&
+            input.input_params.batch_forward_type.has_decode()) {
+          // replace step i model input with true output of step i-1
+          input = update_input_by_last_step_output(input);
         }
+
+        const auto output = this->step(input);
+        if (output.has_value()) {
+          if (is_driver() || FLAGS_enable_eplb) {
+            std::unique_lock<std::mutex> lock(mtx_);
+            cv_.wait(lock, [this] { return !is_recorded_; });
+            update_last_step_output(output);
+            is_recorded_ = true;
+            cv_.notify_one();
+          } else {
+            update_last_step_output(output);
+          }
+        } else {
+          if (is_driver() || FLAGS_enable_eplb) {
+            std::unique_lock<std::mutex> lock(mtx_);
+            cv_.wait(lock, [this] { return !is_recorded_; });
+            last_step_output_valid_ = false;
+            is_recorded_ = true;
+            cv_.notify_one();
+          } else {
+            last_step_output_valid_ = false;
+          }
+        }
+        promise.setValue(output);
       }
-      promise.setValue(output);
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "Worker step_async failed, rank=" << parallel_args_.rank()
+                 << ", device=" << device_.index() << ", error=" << e.what();
+      promise.setException(folly::exception_wrapper(std::current_exception()));
+    } catch (...) {
+      LOG(ERROR) << "Worker step_async failed, rank=" << parallel_args_.rank()
+                 << ", device=" << device_.index()
+                 << ", error=unknown exception";
+      promise.setException(folly::exception_wrapper(std::current_exception()));
     }
   });
   return future;
@@ -973,6 +1007,7 @@ bool WorkerImpl::init_model(const std::string& model_weights_path,
   auto tensor_options = torch::dtype(dtype_).device(device_);
   context_ = ModelContext(parallel_args_, args, quant_args, tensor_options);
   context_.set_model_id(options_.model_id());
+  context_.set_cache_namespace(build_aclnn_cache_namespace(options_, device_));
 
   // init model, create model executor
   bool status = this->init_model(context_);

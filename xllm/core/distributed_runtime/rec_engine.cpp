@@ -22,6 +22,8 @@ limitations under the License.
 #include <functional>
 #include <map>
 #include <memory>
+#include <sstream>
+#include <stdexcept>
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
@@ -39,6 +41,18 @@ limitations under the License.
 #include "util/utils.h"
 
 namespace xllm {
+
+namespace {
+
+void throw_rec_worker_failure(const char* pipeline_name,
+                              size_t worker_index,
+                              const std::string& detail) {
+  std::stringstream ss;
+  ss << pipeline_name << " worker " << worker_index << " failed: " << detail;
+  throw std::runtime_error(ss.str());
+}
+
+}  // namespace
 
 // ============================================================
 // RecEngine Implementation
@@ -715,15 +729,20 @@ ForwardOutput RecEngine::OneRecEnginePipeline::get_model_output(
   // Check all worker results for failures
   for (size_t i = 0; i < results.size(); ++i) {
     if (results[i].hasException()) {
-      LOG(FATAL) << "Worker " << i
-                 << " failed with exception: " << results[i].exception().what();
+      throw_rec_worker_failure("OneRecEnginePipeline",
+                               i,
+                               results[i].exception().what().toStdString());
     }
-    CHECK(results[i].value().has_value())
-        << "Worker " << i << " failed to execute model and returned no output.";
+    if (!results[i].value().has_value()) {
+      throw_rec_worker_failure(
+          "OneRecEnginePipeline", i, "returned no forward output");
+    }
   }
 
   auto forward_output = results.front().value();
-  CHECK(forward_output.has_value()) << "Failed to execute model";
+  if (!forward_output.has_value()) {
+    throw std::runtime_error("OneRecEnginePipeline failed to execute model");
+  }
 
   auto& output = forward_output.value();
   auto& sample_output = output.sample_output;
@@ -960,15 +979,21 @@ ForwardOutput RecEngine::RecMultiRoundEnginePipeline::get_model_output(
   // Check all worker results for failures
   for (size_t i = 0; i < results.size(); ++i) {
     if (results[i].hasException()) {
-      LOG(FATAL) << "Worker " << i
-                 << " failed with exception: " << results[i].exception().what();
+      throw_rec_worker_failure("RecMultiRoundEnginePipeline",
+                               i,
+                               results[i].exception().what().toStdString());
     }
-    CHECK(results[i].value().has_value())
-        << "Worker " << i << " failed to execute model and returned no output.";
+    if (!results[i].value().has_value()) {
+      throw_rec_worker_failure(
+          "RecMultiRoundEnginePipeline", i, "returned no forward output");
+    }
   }
 
   auto forward_output = results.front().value();
-  CHECK(forward_output.has_value()) << "Failed to execute model";
+  if (!forward_output.has_value()) {
+    throw std::runtime_error(
+        "RecMultiRoundEnginePipeline failed to execute model");
+  }
 
   // D2H transfer for beam_sequence_group (multi-round results)
   auto& output = forward_output.value();

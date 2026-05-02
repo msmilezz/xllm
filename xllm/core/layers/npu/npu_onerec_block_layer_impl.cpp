@@ -21,6 +21,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstring>
 #include <set>
+#include <sstream>
 
 #include "common/global_flags.h"
 #include "common/rec_runtime_config.h"
@@ -592,6 +593,44 @@ static const std::unordered_map<int32_t, int32_t> kOneRecWeightShard = {
     {kInSharedExpertGateScale, 0},
     {kInSharedExpertGateOffset, 0},
 };
+
+constexpr int32_t kOneRecSeqLensLogLimit = 16;
+std::atomic<int32_t> g_onerec_seq_lens_log_count{0};
+constexpr int32_t kOneRecCrossSeqLensLogLimit = 16;
+std::atomic<int32_t> g_onerec_cross_seq_lens_log_count{0};
+
+bool should_log_onerec_seq_lens(int32_t layer_id) {
+  if (layer_id != 0) {
+    return false;
+  }
+  int32_t count = g_onerec_seq_lens_log_count.fetch_add(1);
+  return count < kOneRecSeqLensLogLimit;
+}
+
+bool should_log_onerec_cross_seq_lens(int32_t layer_id) {
+  if (layer_id != 0) {
+    return false;
+  }
+  int32_t count = g_onerec_cross_seq_lens_log_count.fetch_add(1);
+  return count < kOneRecCrossSeqLensLogLimit;
+}
+
+std::string format_seq_lens_for_log(const int32_t* data, int64_t count) {
+  std::stringstream ss;
+  ss << "[";
+  const int64_t limit = std::min<int64_t>(count, 8);
+  for (int64_t i = 0; i < limit; ++i) {
+    if (i != 0) {
+      ss << ", ";
+    }
+    ss << data[i];
+  }
+  if (count > limit) {
+    ss << ", ...";
+  }
+  ss << "]";
+  return ss.str();
+}
 
 }  // namespace
 
@@ -1515,6 +1554,18 @@ int32_t NpuOneRecBlockLayerImpl::setup_common_decoder_tensors(
         atb_speed::Utils::AtTensor2Tensor(input_params.kv_seq_lens);
     node.variantPack.inTensors.at(idx).hostData =
         input_params.kv_seq_lens_vec.data();
+    if (should_log_onerec_seq_lens(layer_id_)) {
+      const int64_t seq_lens_count =
+          static_cast<int64_t>(input_params.kv_seq_lens_vec.size());
+      const int32_t* seq_lens_data = input_params.kv_seq_lens_vec.data();
+      LOG(INFO) << "OneRec kv_seq_lens before ACLNN"
+                << ", device=" << device_id_ << ", layer_id=" << layer_id_
+                << ", stage=" << (param.isPrefill ? "prefill" : "decode")
+                << ", first_prefill=" << is_first_prefill
+                << ", ptr=" << seq_lens_data << ", count=" << seq_lens_count
+                << ", values="
+                << format_seq_lens_for_log(seq_lens_data, seq_lens_count);
+    }
   } else {
     int32_t seq_len = std::max(static_cast<int32_t>(x.size(0)), 1);
     seq_lens_vec_ = {seq_len};
@@ -1524,6 +1575,17 @@ int32_t NpuOneRecBlockLayerImpl::setup_common_decoder_tensors(
     node.variantPack.inTensors.at(idx) =
         atb_speed::Utils::AtTensor2Tensor(fallback_kv_seq_lens_tensor_);
     node.variantPack.inTensors.at(idx).hostData = seq_lens_vec_.data();
+    if (should_log_onerec_seq_lens(layer_id_)) {
+      const int64_t seq_lens_count = static_cast<int64_t>(seq_lens_vec_.size());
+      const int32_t* seq_lens_data = seq_lens_vec_.data();
+      LOG(INFO) << "OneRec fallback kv_seq_lens before ACLNN"
+                << ", device=" << device_id_ << ", layer_id=" << layer_id_
+                << ", stage=" << (param.isPrefill ? "prefill" : "decode")
+                << ", first_prefill=" << is_first_prefill
+                << ", ptr=" << seq_lens_data << ", count=" << seq_lens_count
+                << ", values="
+                << format_seq_lens_for_log(seq_lens_data, seq_lens_count);
+    }
   }
   idx++;
 
@@ -1611,6 +1673,18 @@ int32_t NpuOneRecBlockLayerImpl::setup_common_decoder_tensors(
         onerec_params->encoder_seq_lens_tensor);
     node.variantPack.inTensors.at(idx).hostData =
         const_cast<int32_t*>(onerec_params->encoder_seq_lens.data());
+    if (should_log_onerec_cross_seq_lens(layer_id_)) {
+      const int64_t seq_lens_count =
+          static_cast<int64_t>(onerec_params->encoder_seq_lens.size());
+      const int32_t* seq_lens_data = onerec_params->encoder_seq_lens.data();
+      LOG(INFO) << "OneRec cross_kv_len before ACLNN"
+                << ", device=" << device_id_ << ", layer_id=" << layer_id_
+                << ", stage=" << (param.isPrefill ? "prefill" : "decode")
+                << ", first_prefill=" << is_first_prefill
+                << ", ptr=" << seq_lens_data << ", count=" << seq_lens_count
+                << ", values="
+                << format_seq_lens_for_log(seq_lens_data, seq_lens_count);
+    }
   } else {
     node.variantPack.inTensors.at(idx) = placeholder_;
     node.variantPack.inTensors.at(idx).hostData = placeholder_vec_.data();

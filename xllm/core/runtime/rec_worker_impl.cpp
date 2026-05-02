@@ -15,14 +15,17 @@ limitations under the License.
 
 #include "rec_worker_impl.h"
 
+#include <folly/ExceptionWrapper.h>
 #include <glog/logging.h>
 
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #include "common/device_monitor.h"
@@ -51,6 +54,8 @@ limitations under the License.
 #include "framework/state_dict/rec_vocab_dict.h"
 #include "models/model_registry.h"
 #include "util/env_var.h"
+#include "util/scope_guard.h"
+#include "util/tensor_helper.h"
 #include "util/timer.h"
 
 namespace xllm {
@@ -501,6 +506,13 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
     torch::Tensor filter_mask;
     if (filter_mask_future.has_value()) {
       filter_mask = std::move(filter_mask_future.value()).get();
+      if (filter_mask.defined()) {
+        filter_mask = safe_to(filter_mask,
+                              torch::TensorOptions()
+                                  .dtype(logits.scalar_type())
+                                  .device(logits.device()),
+                              true);
+      }
     }
     auto sample_output =
         rec_sampler_->forward(logits, sampling_params, filter_mask);
@@ -1581,6 +1593,11 @@ bool RecWorkerImpl::init_model(ModelContext& context) {
                                        context.get_model_args(),
                                        context.get_quant_args(),
                                        context.get_tensor_options());
+    runtime.context->set_model_id(context.get_model_id());
+    std::string runtime_cache_namespace = context.get_cache_namespace();
+    runtime_cache_namespace +=
+        "|pipeline=" + std::to_string(static_cast<int64_t>(i));
+    runtime.context->set_cache_namespace(runtime_cache_namespace);
 
     if (rec_model_kind_ == RecModelKind::kOneRec) {
       runtime.model = create_rec_model(*runtime.context.get());
@@ -1718,6 +1735,7 @@ std::optional<ForwardOutput> RecWorkerImpl::step(const ForwardInput& input) {
 folly::SemiFuture<std::optional<ForwardOutput>> RecWorkerImpl::step_async(
     const ForwardInput& input) {
   folly::Promise<std::optional<ForwardOutput>> promise;
+  ForwardInput input_copy = input;
 
   size_t index;
   index_queue_.wait_dequeue(index);
@@ -1727,24 +1745,44 @@ folly::SemiFuture<std::optional<ForwardOutput>> RecWorkerImpl::step_async(
   // idle threads The logic for allocating instance_id happens when the task
   // executes (see lambda below)
   step_threadpool_->schedule_with_tid(
-      [this, &input, index, promise = std::move(promise)]() mutable {
-        ScopedRecRuntimeConfig rec_runtime_scope(options_.rec_runtime_config());
-        auto stream_guard =
-            work_pipelines_[index]->runtime().stream->set_stream_guard();
+      [this,
+       input = std::move(input_copy),
+       index,
+       promise = std::move(promise)]() mutable {
+        SCOPE_GUARD([this, index] { index_queue_.enqueue(index); });
 
-        ForwardInput input_on_device;
-        work_pipelines_[index]->prepare_work_before_execute(input,
-                                                            input_on_device);
+        try {
+          ScopedRecRuntimeConfig rec_runtime_scope(
+              options_.rec_runtime_config());
+          device_.set_device();
+          auto stream_guard =
+              work_pipelines_[index]->runtime().stream->set_stream_guard();
 
-        if (hierarchy_kv_cache_transfer_ != nullptr) {
-          hierarchy_kv_cache_transfer_->set_layer_synchronizer(
-              input_on_device.input_params);
+          ForwardInput input_on_device;
+          work_pipelines_[index]->prepare_work_before_execute(input,
+                                                              input_on_device);
+
+          if (hierarchy_kv_cache_transfer_ != nullptr) {
+            hierarchy_kv_cache_transfer_->set_layer_synchronizer(
+                input_on_device.input_params);
+          }
+
+          const auto output = work_pipelines_[index]->step(input_on_device);
+          promise.setValue(output);
+        } catch (const std::exception& e) {
+          LOG(ERROR) << "Rec worker step_async failed, rank="
+                     << parallel_args_.rank() << ", device=" << device_.index()
+                     << ", pipeline_index=" << index << ", error=" << e.what();
+          promise.setException(
+              folly::exception_wrapper(std::current_exception()));
+        } catch (...) {
+          LOG(ERROR) << "Rec worker step_async failed, rank="
+                     << parallel_args_.rank() << ", device=" << device_.index()
+                     << ", pipeline_index=" << index
+                     << ", error=unknown exception";
+          promise.setException(
+              folly::exception_wrapper(std::current_exception()));
         }
-
-        const auto output = work_pipelines_[index]->step(input_on_device);
-        promise.setValue(output);
-
-        index_queue_.enqueue(index);
       },
       index);
 

@@ -17,10 +17,74 @@ limitations under the License.
 
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+
+#include <algorithm>
+#include <sstream>
 // DECLARE_string(rank_tablefile);
+#include "util/env_var.h"
 DECLARE_string(communication_backend);
 namespace xllm {
 namespace layer {
+
+namespace {
+
+constexpr int64_t kEmbeddingIdPreviewCount = 16;
+
+bool should_debug_word_embedding_ids() {
+  return util::get_bool_env("XLLM_DEBUG_WORD_EMBEDDING_IDS", false);
+}
+
+bool should_clone_word_embedding_ids() {
+  return util::get_bool_env("XLLM_DEBUG_WORD_EMBEDDING_CLONE_IDS", false);
+}
+
+void maybe_log_word_embedding_id_range(const torch::Tensor& input_ids,
+                                       int64_t vocab_size,
+                                       int32_t device_id) {
+  if (!should_debug_word_embedding_ids()) {
+    return;
+  }
+
+  torch::Tensor flattened_input_ids = input_ids.reshape({-1});
+  torch::Tensor input_ids_cpu = flattened_input_ids.to(
+      torch::TensorOptions().device(torch::kCPU).dtype(torch::kInt64));
+  if (input_ids_cpu.numel() == 0) {
+    LOG(INFO) << "word embedding ids debug, device=" << device_id
+              << ", vocab_size=" << vocab_size << ", numel=0";
+    return;
+  }
+
+  int64_t min_id = input_ids_cpu.min().item<int64_t>();
+  int64_t max_id = input_ids_cpu.max().item<int64_t>();
+  int64_t preview_count =
+      std::min<int64_t>(input_ids_cpu.numel(), kEmbeddingIdPreviewCount);
+  const int64_t* input_ids_ptr = input_ids_cpu.data_ptr<int64_t>();
+  std::ostringstream preview_stream;
+  for (int64_t index = 0; index < preview_count; ++index) {
+    if (index > 0) {
+      preview_stream << ",";
+    }
+    preview_stream << input_ids_ptr[index];
+  }
+
+  if (device_id == 1) {
+    LOG(INFO) << "word embedding ids debug, device=" << device_id
+              << ", vocab_size=" << vocab_size
+              << ", numel=" << input_ids_cpu.numel() << ", min_id=" << min_id
+              << ", max_id=" << max_id << ", preview=[" << preview_stream.str()
+              << "]";
+  }
+
+  if (min_id < 0 || max_id >= vocab_size) {
+    LOG(ERROR) << "word embedding ids out of range, device=" << device_id
+               << ", vocab_size=" << vocab_size
+               << ", numel=" << input_ids_cpu.numel() << ", min_id=" << min_id
+               << ", max_id=" << max_id << ", preview=[" << preview_stream.str()
+               << "]";
+  }
+}
+
+}  // namespace
 
 void NpuWordEmbeddingImpl::param_from_args(
     atb_speed::common::WordEmbeddingParam& param,
@@ -109,8 +173,16 @@ int64_t NpuWordEmbeddingImpl::init_node(
 torch::Tensor NpuWordEmbeddingImpl::forward(const torch::Tensor& x,
                                             int nodeId) {
   atb::Status st;
+  torch::Tensor input_ids = x;
+  if (should_clone_word_embedding_ids()) {
+    input_ids = x.contiguous().clone();
+  }
+
+  int64_t vocab_size =
+      static_cast<int64_t>(atb_weight_tensors_.at(0).desc.shape.dims[0]);
+  maybe_log_word_embedding_id_range(input_ids, vocab_size, device_.index());
   // std::cout<<"x:"<<x<<std::endl;
-  build_node_variant_pack(embedding_node_, x);
+  build_node_variant_pack(embedding_node_, input_ids);
   st = execute_node(embedding_node_, nodeId);
   LOG_IF(FATAL, st != 0) << modelName_
                          << "infer shape fail, error code: " << st;
