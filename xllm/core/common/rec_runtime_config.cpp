@@ -15,12 +15,22 @@ limitations under the License.
 
 #include "common/rec_runtime_config.h"
 
+#include <glog/logging.h>
+
+#include <cstdlib>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include "common/global_flags.h"
 
 namespace xllm {
 namespace {
 
 thread_local const RecRuntimeConfig* g_scoped_rec_runtime_config = nullptr;
+std::mutex g_rec_runtime_env_mutex;
+std::optional<bool> g_task_queue_env_override;
 
 }  // namespace
 
@@ -36,6 +46,38 @@ ScopedRecRuntimeConfig::~ScopedRecRuntimeConfig() {
 
 const RecRuntimeConfig* try_get_scoped_rec_runtime_config() {
   return g_scoped_rec_runtime_config;
+}
+
+void apply_rec_runtime_process_environment(
+    const RecRuntimeConfig& runtime_config,
+    std::string_view source) {
+  std::lock_guard<std::mutex> lock(g_rec_runtime_env_mutex);
+
+  const bool enable_task_queue = runtime_config.enable_task_queue;
+  const char* expected_value = enable_task_queue ? "1" : "0";
+  const char* current_value = std::getenv("TASK_QUEUE_ENABLE");
+  if (g_task_queue_env_override.has_value() &&
+      g_task_queue_env_override.value() != enable_task_queue) {
+    LOG(WARNING) << "Ignore conflicting TASK_QUEUE_ENABLE request from "
+                 << source << ", requested=" << expected_value << ", applied="
+                 << (g_task_queue_env_override.value() ? "1" : "0");
+    return;
+  }
+
+  if (current_value == nullptr ||
+      std::string(current_value) != expected_value) {
+    const int32_t ret = setenv("TASK_QUEUE_ENABLE", expected_value, 1);
+    CHECK_EQ(ret, 0) << "Failed to set TASK_QUEUE_ENABLE=" << expected_value;
+  }
+
+  g_task_queue_env_override = enable_task_queue;
+  LOG(INFO) << "Applied TASK_QUEUE_ENABLE=" << expected_value
+            << " for REC runtime source=" << source;
+}
+
+bool get_rec_runtime_enable_task_queue() {
+  const RecRuntimeConfig* runtime_config = try_get_scoped_rec_runtime_config();
+  return runtime_config != nullptr ? runtime_config->enable_task_queue : true;
 }
 
 bool get_rec_runtime_enable_prefix_cache() {

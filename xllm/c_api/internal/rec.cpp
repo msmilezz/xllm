@@ -29,6 +29,7 @@ limitations under the License.
 #include <stdexcept>
 
 #include "core/common/global_flags.h"
+#include "core/common/rec_runtime_config.h"
 #include "core/framework/model_loader.h"
 #include "core/util/rec_model_utils.h"
 #include "core/util/utils.h"
@@ -76,6 +77,7 @@ void apply_onerec_pipeline_toggles(xllm::Options* options,
                                    xllm::RecRuntimeConfig* runtime_config) {
   CHECK(options != nullptr);
   CHECK(runtime_config != nullptr);
+  runtime_config->enable_task_queue = false;
   runtime_config->enable_rec_prefill_only = true;
   runtime_config->enable_constrained_decoding = true;
   runtime_config->enable_prefix_cache = false;
@@ -100,6 +102,7 @@ xllm::RecRuntimeConfig build_rec_runtime_config(
     const XLLM_InitOptions& init_options,
     bool is_onerec_model) {
   xllm::RecRuntimeConfig runtime_config;
+  runtime_config.enable_task_queue = !is_onerec_model;
   runtime_config.enable_prefix_cache = init_options.enable_prefix_cache;
   runtime_config.enable_schedule_overlap = init_options.enable_schedule_overlap;
   runtime_config.enable_chunked_prefill = init_options.enable_chunked_prefill;
@@ -296,6 +299,8 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         .beam_width(runtime_config.beam_width)
         .rec_worker_max_concurrency(runtime_config.rec_worker_max_concurrency)
         .rec_runtime_config(runtime_config);
+    xllm::apply_rec_runtime_process_environment(runtime_config,
+                                                "rec-c-api-init");
 
     LOG(INFO) << "REC C API selected pipeline="
               << get_rec_pipeline_name(pipeline_type)

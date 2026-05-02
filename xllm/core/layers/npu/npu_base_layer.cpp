@@ -148,6 +148,11 @@ atb::Status BaseLayer::execute_plan(const atb_speed::Model::Node& node,
 
 void BaseLayer::run_task(std::string taskName,
                          std::function<int()> task) const {
+  // if (!get_rec_runtime_enable_task_queue()) {
+  //   task();
+  //   return;
+  // }
+
   at_npu::native::OpCommand cmd;
   cmd.Name(taskName);
   cmd.SetCustomHandler(task);

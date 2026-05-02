@@ -17,6 +17,10 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <optional>
+#include <string>
+
 #include "common/global_flags.h"
 
 namespace xllm {
@@ -85,6 +89,27 @@ class ScopedFlagState final {
   int32_t max_decode_rounds_;
 };
 
+class ScopedTaskQueueEnvState final {
+ public:
+  ScopedTaskQueueEnvState() {
+    const char* value = std::getenv("TASK_QUEUE_ENABLE");
+    if (value != nullptr) {
+      previous_value_ = std::string(value);
+    }
+  }
+
+  ~ScopedTaskQueueEnvState() {
+    if (previous_value_.has_value()) {
+      setenv("TASK_QUEUE_ENABLE", previous_value_->c_str(), 1);
+    } else {
+      unsetenv("TASK_QUEUE_ENABLE");
+    }
+  }
+
+ private:
+  std::optional<std::string> previous_value_;
+};
+
 }  // namespace
 
 TEST(RecRuntimeConfigTest, FallsBackToGlobalFlagsWhenNoScope) {
@@ -108,6 +133,7 @@ TEST(RecRuntimeConfigTest, FallsBackToGlobalFlagsWhenNoScope) {
   FLAGS_beam_width = 64;
   FLAGS_max_decode_rounds = 5;
 
+  EXPECT_TRUE(get_rec_runtime_enable_task_queue());
   EXPECT_TRUE(get_rec_runtime_enable_prefix_cache());
   EXPECT_TRUE(get_rec_runtime_enable_schedule_overlap());
   EXPECT_TRUE(get_rec_runtime_enable_chunked_prefill());
@@ -152,6 +178,7 @@ TEST(RecRuntimeConfigTest, ScopedConfigOverridesAndRestoresPreviousState) {
   parent_config.enable_prefix_cache = true;
   parent_config.enable_schedule_overlap = true;
   parent_config.enable_chunked_prefill = true;
+  parent_config.enable_task_queue = false;
   parent_config.enable_graph = true;
   parent_config.enable_graph_mode_decode_no_padding = true;
   parent_config.enable_prefill_piecewise_graph = true;
@@ -169,6 +196,7 @@ TEST(RecRuntimeConfigTest, ScopedConfigOverridesAndRestoresPreviousState) {
 
   {
     ScopedRecRuntimeConfig scope(parent_config);
+    EXPECT_FALSE(get_rec_runtime_enable_task_queue());
     EXPECT_TRUE(get_rec_runtime_enable_prefix_cache());
     EXPECT_TRUE(get_rec_runtime_enable_schedule_overlap());
     EXPECT_TRUE(get_rec_runtime_enable_chunked_prefill());
@@ -188,24 +216,28 @@ TEST(RecRuntimeConfigTest, ScopedConfigOverridesAndRestoresPreviousState) {
     EXPECT_EQ(get_rec_runtime_max_decode_rounds(), 7);
 
     RecRuntimeConfig child_config;
+    child_config.enable_task_queue = true;
     child_config.enable_graph = false;
     child_config.enable_constrained_decoding = false;
     child_config.beam_width = 99;
     child_config.max_decode_rounds = 11;
     {
       ScopedRecRuntimeConfig child_scope(child_config);
+      EXPECT_TRUE(get_rec_runtime_enable_task_queue());
       EXPECT_FALSE(get_rec_runtime_enable_graph());
       EXPECT_FALSE(get_rec_runtime_enable_constrained_decoding());
       EXPECT_EQ(get_rec_runtime_beam_width(), 99);
       EXPECT_EQ(get_rec_runtime_max_decode_rounds(), 11);
     }
 
+    EXPECT_FALSE(get_rec_runtime_enable_task_queue());
     EXPECT_TRUE(get_rec_runtime_enable_graph());
     EXPECT_TRUE(get_rec_runtime_enable_constrained_decoding());
     EXPECT_EQ(get_rec_runtime_beam_width(), 23);
     EXPECT_EQ(get_rec_runtime_max_decode_rounds(), 7);
   }
 
+  EXPECT_TRUE(get_rec_runtime_enable_task_queue());
   EXPECT_FALSE(get_rec_runtime_enable_prefix_cache());
   EXPECT_FALSE(get_rec_runtime_enable_schedule_overlap());
   EXPECT_FALSE(get_rec_runtime_enable_chunked_prefill());
@@ -223,6 +255,28 @@ TEST(RecRuntimeConfigTest, ScopedConfigOverridesAndRestoresPreviousState) {
   EXPECT_EQ(get_rec_runtime_worker_max_concurrency(), 1);
   EXPECT_EQ(get_rec_runtime_beam_width(), 8);
   EXPECT_EQ(get_rec_runtime_max_decode_rounds(), 1);
+}
+
+TEST(RecRuntimeConfigTest, AppliesTaskQueueEnvironment) {
+  ScopedTaskQueueEnvState scoped_env;
+
+  RecRuntimeConfig disable_task_queue_config;
+  disable_task_queue_config.enable_task_queue = false;
+  apply_rec_runtime_process_environment(disable_task_queue_config,
+                                        "disable-test");
+
+  const char* task_queue_env = std::getenv("TASK_QUEUE_ENABLE");
+  ASSERT_NE(task_queue_env, nullptr);
+  EXPECT_STREQ(task_queue_env, "0");
+
+  RecRuntimeConfig enable_task_queue_config;
+  enable_task_queue_config.enable_task_queue = true;
+  apply_rec_runtime_process_environment(enable_task_queue_config,
+                                        "enable-test");
+
+  task_queue_env = std::getenv("TASK_QUEUE_ENABLE");
+  ASSERT_NE(task_queue_env, nullptr);
+  EXPECT_STREQ(task_queue_env, "0");
 }
 
 }  // namespace xllm

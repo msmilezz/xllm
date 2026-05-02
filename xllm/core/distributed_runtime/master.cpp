@@ -32,6 +32,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/rec_runtime_config.h"
 #include "common/types.h"
 #include "core/common/xllm_build_info.h"
 #include "dit_master.h"
@@ -45,6 +46,7 @@ limitations under the License.
 #include "speculative_engine.h"
 #include "util/device_name_utils.h"
 #include "util/model_config_utils.h"
+#include "util/rec_model_utils.h"
 #include "util/scope_guard.h"
 #include "util/timer.h"
 #include "util/utils.h"
@@ -353,6 +355,10 @@ Master::Master(const Options& options, EngineType type)
     LOG(WARNING) << "Force to disable schedule overlap for REC model, not "
                     "supported yet.";
     RecRuntimeConfig rec_runtime_config = options_.rec_runtime_config();
+    const std::string rec_model_type = get_model_type(options_.model_path());
+    const RecModelKind rec_model_kind = get_rec_model_kind(rec_model_type);
+    rec_runtime_config.enable_task_queue =
+        rec_model_kind != RecModelKind::kOneRec;
     rec_runtime_config.enable_prefix_cache = options_.enable_prefix_cache();
     rec_runtime_config.enable_schedule_overlap =
         options_.enable_schedule_overlap();
@@ -365,6 +371,7 @@ Master::Master(const Options& options, EngineType type)
     rec_runtime_config.rec_worker_max_concurrency =
         options_.rec_worker_max_concurrency();
     rec_runtime_config.beam_width = options_.beam_width();
+    apply_rec_runtime_process_environment(rec_runtime_config, "rec-master");
     options_.rec_runtime_config(rec_runtime_config);
 
     runtime::Options eng_options;

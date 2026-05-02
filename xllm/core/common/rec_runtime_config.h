@@ -16,10 +16,12 @@ limitations under the License.
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace xllm {
 
 struct RecRuntimeConfig {
+  bool enable_task_queue = true;
   bool enable_prefix_cache = false;
   bool enable_schedule_overlap = false;
   bool enable_chunked_prefill = false;
@@ -55,6 +57,11 @@ class ScopedRecRuntimeConfig final {
 
 const RecRuntimeConfig* try_get_scoped_rec_runtime_config();
 
+void apply_rec_runtime_process_environment(
+    const RecRuntimeConfig& runtime_config,
+    std::string_view source = "unknown");
+
+bool get_rec_runtime_enable_task_queue();
 bool get_rec_runtime_enable_prefix_cache();
 bool get_rec_runtime_enable_schedule_overlap();
 bool get_rec_runtime_enable_chunked_prefill();
