@@ -78,9 +78,10 @@ void apply_onerec_pipeline_toggles(xllm::Options* options,
                                    xllm::RecRuntimeConfig* runtime_config) {
   CHECK(options != nullptr);
   CHECK(runtime_config != nullptr);
-  const bool enable_onerec_xattention = FLAGS_max_decode_rounds > 0;
-  FLAGS_enable_rec_prefill_only = !enable_onerec_xattention;
-  runtime_config->enable_rec_prefill_only = !enable_onerec_xattention;
+  const bool enable_prefill_only = FLAGS_enable_rec_prefill_only;
+  const bool enable_onerec_xattention =
+      !enable_prefill_only && FLAGS_max_decode_rounds > 0;
+  runtime_config->enable_rec_prefill_only = enable_prefill_only;
   runtime_config->enable_constrained_decoding = true;
   runtime_config->enable_prefix_cache = false;
   runtime_config->enable_schedule_overlap = false;
@@ -146,6 +147,7 @@ xllm::RecRuntimeConfig build_rec_runtime_config(
   runtime_config.enable_schedule_overlap = init_options.enable_schedule_overlap;
   runtime_config.enable_chunked_prefill = init_options.enable_chunked_prefill;
   runtime_config.enable_graph = !is_onerec_model;
+  runtime_config.enable_rec_prefill_only = init_options.enable_rec_prefill_only;
   runtime_config.block_size = static_cast<int32_t>(init_options.block_size);
   runtime_config.max_tokens_per_batch =
       static_cast<int32_t>(init_options.max_tokens_per_batch);

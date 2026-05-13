@@ -114,7 +114,7 @@ const XLLM_InitOptions XLLM_INIT_REC_OPTIONS_DEFAULT = {
     .expert_parallel_degree = 0,
     .server_idx = 0,
     .beam_width = 128,
-    .max_decode_rounds = 3,
+    .max_decode_rounds = 2,
     .max_token_per_req = 1000,
     .max_memory_utilization = 0.55,
     .rec_worker_max_concurrency = 2,
@@ -127,7 +127,7 @@ const XLLM_InitOptions XLLM_INIT_REC_OPTIONS_DEFAULT = {
     .xservice_addr = "",
     .instance_name = "",
     .kv_cache_transfer_mode = "PUSH",
-    .log_dir = "./Logs",
+    .log_dir = "/export/Logs",
     .draft_model = "",
     .draft_devices = ""};
 
