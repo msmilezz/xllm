@@ -19,6 +19,7 @@ limitations under the License.
 #include <string_view>
 
 #include "core/common/global_flags.h"
+#include "core/common/rec_runtime_config.h"
 
 namespace xllm {
 
@@ -40,12 +41,26 @@ enum class RecPipelineType : uint8_t {
 // Check if Rec multi-round mode is enabled.
 // Rec multi-round mode: multi-round decode loop runs on device (worker layer),
 // while the engine issues a single step.
-inline bool is_rec_multi_round_mode() { return FLAGS_max_decode_rounds > 0; }
+inline bool is_rec_multi_round_mode(const RecRuntimeConfig& runtime_config) {
+  return runtime_config.max_decode_rounds > 0;
+}
+
+inline bool is_rec_multi_round_mode() {
+  return get_rec_runtime_max_decode_rounds() > 0;
+}
 
 // Get the number of decode rounds for Rec multi-round mode.
 // Returns 0 if Rec multi-round mode is disabled.
+inline int32_t get_rec_multi_round_decode_rounds(
+    const RecRuntimeConfig& runtime_config) {
+  return is_rec_multi_round_mode(runtime_config)
+             ? runtime_config.max_decode_rounds
+             : 0;
+}
+
 inline int32_t get_rec_multi_round_decode_rounds() {
-  return is_rec_multi_round_mode() ? FLAGS_max_decode_rounds : 0;
+  const int32_t max_decode_rounds = get_rec_runtime_max_decode_rounds();
+  return max_decode_rounds > 0 ? max_decode_rounds : 0;
 }
 
 inline bool is_onerec_xattention_mode() { return FLAGS_max_decode_rounds > 0; }
@@ -65,6 +80,23 @@ inline bool is_onerec_pipeline_type(RecPipelineType type) {
 }
 
 // Pipeline strategy selector: choose strategy based on RecModelKind
+inline RecPipelineType get_rec_pipeline_type(
+    RecModelKind kind,
+    const RecRuntimeConfig& runtime_config) {
+  switch (kind) {
+    case RecModelKind::kLlmRec:
+      if (is_rec_multi_round_mode(runtime_config)) {
+        return RecPipelineType::kLlmRecMultiRoundPipeline;
+      } else {
+        return RecPipelineType::kLlmRecDefault;
+      }
+    case RecModelKind::kOneRec:
+      return RecPipelineType::kOneRecDefault;
+    default:
+      return RecPipelineType::kLlmRecDefault;
+  }
+}
+
 inline RecPipelineType get_rec_pipeline_type(RecModelKind kind) {
   switch (kind) {
     case RecModelKind::kLlmRec:

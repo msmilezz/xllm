@@ -29,6 +29,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/rec_runtime_config.h"
 #include "distributed_runtime/engine.h"
 #include "framework/batch/batch_factory.h"
 #include "framework/request/priority_comparator.h"
@@ -81,7 +82,7 @@ inline size_t maybe_align_cp_prefill_tokens(const Sequence* sequence,
   if (sequence == nullptr || cp_size <= 1 || num_tokens == 0) {
     return num_tokens;
   }
-  if (FLAGS_enable_chunked_prefill) {
+  if (get_rec_runtime_enable_chunked_prefill()) {
     return num_tokens;
   }
   if (!sequence->is_prefill_stage()) {
@@ -105,7 +106,8 @@ ContinuousScheduler::ContinuousScheduler(Engine* engine, const Options& options)
   kv_cache_manager_ = engine_->block_manager_pool();
   CHECK(kv_cache_manager_ != nullptr);
 
-  enable_prefix_cache_ = FLAGS_enable_prefix_cache;
+  enable_prefix_cache_ =
+      options_.enable_prefix_cache().value_or(FLAGS_enable_prefix_cache);
 
   last_batch_.resize(options_.dp_size());
 
@@ -1285,7 +1287,7 @@ void ContinuousScheduler::update_memory_metrics(
         std::to_string(dp_rank),
         static_cast<int64_t>(active_kv_cache_size_in_kilobytes));
 
-    if (FLAGS_enable_chunked_prefill) {
+    if (get_rec_runtime_enable_chunked_prefill()) {
       MULTI_HISTOGRAM_OBSERVE(decode_active_activation_size_in_kilobytes,
                               std::to_string(dp_rank),
                               active_activation_size_in_kilobytes);

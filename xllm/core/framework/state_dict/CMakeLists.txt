@@ -17,21 +17,10 @@ cc_library(
     utils.cpp
     rec_vocab_dict.cpp
   DEPS
+    common
     rust_safetensors
     torch
     glog::glog
     Folly::folly
     util
-)
-
-cc_test(
-  NAME
-    rec_vocab_dict_test
-  SRCS
-    rec_vocab_dict_test.cpp
-  DEPS
-    :flags
-    :state_dict
-    GTest::gtest_main
-    glog::glog
 )

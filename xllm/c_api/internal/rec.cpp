@@ -28,6 +28,7 @@ limitations under the License.
 #include <limits>
 #include <stdexcept>
 
+#include "core/common/global_flags.h"
 #include "core/framework/model_loader.h"
 #include "core/util/rec_model_utils.h"
 #include "core/util/utils.h"
@@ -52,31 +53,38 @@ const char* get_rec_pipeline_name(xllm::RecPipelineType pipeline_type) {
   }
 }
 
-void reset_pipeline_runtime_toggles() {
-  FLAGS_enable_rec_fast_sampler = false;
-  FLAGS_enable_prefill_piecewise_graph = false;
-  FLAGS_enable_xattention_one_stage = false;
-  FLAGS_enable_graph_mode_decode_no_padding = false;
-  FLAGS_enable_rec_prefill_only = false;
-  FLAGS_enable_constrained_decoding = false;
-  FLAGS_enable_topk_sorted = false;
+void reset_pipeline_runtime_toggles(xllm::RecRuntimeConfig* runtime_config) {
+  CHECK(runtime_config != nullptr);
+  runtime_config->enable_rec_fast_sampler = false;
+  runtime_config->enable_prefill_piecewise_graph = false;
+  runtime_config->enable_xattention_one_stage = false;
+  runtime_config->enable_graph_mode_decode_no_padding = false;
+  runtime_config->enable_rec_prefill_only = false;
+  runtime_config->enable_constrained_decoding = false;
+  runtime_config->enable_topk_sorted = false;
 }
 
-void apply_multi_round_pipeline_toggles() {
-  FLAGS_enable_rec_fast_sampler = true;
-  FLAGS_enable_prefill_piecewise_graph = true;
-  FLAGS_enable_xattention_one_stage = false;
-  FLAGS_enable_graph_mode_decode_no_padding = true;
-  FLAGS_enable_topk_sorted = false;
+void apply_multi_round_pipeline_toggles(
+    xllm::RecRuntimeConfig* runtime_config) {
+  CHECK(runtime_config != nullptr);
+  runtime_config->enable_rec_fast_sampler = true;
+  runtime_config->enable_prefill_piecewise_graph = true;
+  runtime_config->enable_xattention_one_stage = false;
+  runtime_config->enable_graph_mode_decode_no_padding = true;
+  runtime_config->enable_topk_sorted = false;
 }
 
-void apply_onerec_pipeline_toggles(xllm::Options* options) {
-  const bool enable_onerec_xattention = FLAGS_max_decode_rounds > 0;
+void apply_onerec_pipeline_toggles(xllm::Options* options,
+                                   xllm::RecRuntimeConfig* runtime_config) {
+  CHECK(options != nullptr);
+  CHECK(runtime_config != nullptr);
+  const bool enable_onerec_xattention = runtime_config->max_decode_rounds > 0;
   FLAGS_enable_rec_prefill_only = !enable_onerec_xattention;
-  FLAGS_enable_constrained_decoding = true;
-  FLAGS_enable_prefix_cache = false;
-  FLAGS_enable_schedule_overlap = false;
-  FLAGS_enable_chunked_prefill = false;
+  runtime_config->enable_rec_prefill_only = !enable_onerec_xattention;
+  runtime_config->enable_constrained_decoding = true;
+  runtime_config->enable_prefix_cache = false;
+  runtime_config->enable_schedule_overlap = false;
+  runtime_config->enable_chunked_prefill = false;
 
   options->enable_prefix_cache(false)
       .enable_schedule_overlap(false)
@@ -85,6 +93,7 @@ void apply_onerec_pipeline_toggles(xllm::Options* options) {
   if (!enable_onerec_xattention) {
     // Legacy OneRec keeps the historical fixed decode-step behavior.
     FLAGS_max_decode_rounds = 0;
+    runtime_config->max_decode_rounds = 0;
   }
 }
 
@@ -129,6 +138,26 @@ void normalize_onerec_embedded_init_options(XLLM_InitOptions* init_options) {
   }
 }
 
+xllm::RecRuntimeConfig build_rec_runtime_config(
+    const XLLM_InitOptions& init_options,
+    bool is_onerec_model) {
+  xllm::RecRuntimeConfig runtime_config;
+  runtime_config.enable_prefix_cache = init_options.enable_prefix_cache;
+  runtime_config.enable_schedule_overlap = init_options.enable_schedule_overlap;
+  runtime_config.enable_chunked_prefill = init_options.enable_chunked_prefill;
+  runtime_config.enable_graph = !is_onerec_model;
+  runtime_config.block_size = static_cast<int32_t>(init_options.block_size);
+  runtime_config.max_tokens_per_batch =
+      static_cast<int32_t>(init_options.max_tokens_per_batch);
+  runtime_config.max_seqs_per_batch =
+      static_cast<int32_t>(init_options.max_seqs_per_batch);
+  runtime_config.beam_width = static_cast<int32_t>(init_options.beam_width);
+  runtime_config.max_decode_rounds =
+      static_cast<int32_t>(init_options.max_decode_rounds);
+  runtime_config.rec_worker_max_concurrency =
+      is_onerec_model ? kOneRecEmbeddedWorkerConcurrency : 2;
+  return runtime_config;
+}
 }  // namespace
 
 XLLM_CAPI_EXPORT XLLM_REC_Handler* xllm_rec_create(void) {
@@ -137,6 +166,7 @@ XLLM_CAPI_EXPORT XLLM_REC_Handler* xllm_rec_create(void) {
 
   handler->initialized = false;
   handler->pipeline_type = xllm::RecPipelineType::kLlmRecDefault;
+  handler->runtime_config = xllm::RecRuntimeConfig();
 
   return handler;
 }
@@ -148,6 +178,7 @@ XLLM_CAPI_EXPORT void xllm_rec_destroy(XLLM_REC_Handler* handler) {
   handler->executor.reset();
   handler->model_ids.clear();
   handler->pipeline_type = xllm::RecPipelineType::kLlmRecDefault;
+  handler->runtime_config = xllm::RecRuntimeConfig();
   handler->initialized = false;
 
   delete handler;
@@ -224,17 +255,6 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         .is_local(true)
         .server_idx(xllm_init_options.server_idx);
 
-    // @TODO: Currently, gflags are configured through hard coding, which needs
-    // to be improved in the future. For example, a separate gflags
-    // configuration file can be provided to the so for setting gflags.
-    //
-    // REC so still has two configuration paths:
-    // - some request/runtime code reads FLAGS_* directly
-    // - master/worker construction reads xllm::Options
-    //
-    // The fields copied from init options below are read from FLAGS_* today.
-    // beam_width/block_size/max_tokens/max_seqs are also represented in
-    // Options, so duplicated values must stay aligned.
     FLAGS_beam_width = xllm_init_options.beam_width;
     FLAGS_max_decode_rounds = xllm_init_options.max_decode_rounds;
     FLAGS_max_seqs_per_batch = xllm_init_options.max_seqs_per_batch;
@@ -266,6 +286,8 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         xllm_init_options.enable_graph_mode_decode_no_padding;
     FLAGS_enable_block_copy_kernel = xllm_init_options.enable_block_copy_kernel;
     FLAGS_enable_topk_sorted = xllm_init_options.enable_topk_sorted;
+    xllm::RecRuntimeConfig runtime_config =
+        build_rec_runtime_config(xllm_init_options, is_onerec_model);
 
     auto model_loader = xllm::ModelLoader::create(model_path);
     if (model_loader == nullptr) {
@@ -280,24 +302,16 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
       return false;
     }
     const xllm::RecPipelineType pipeline_type =
-        xllm::get_rec_pipeline_type(rec_model_kind);
+        xllm::get_rec_pipeline_type(rec_model_kind, runtime_config);
 
-    // Hard-coded REC so settings. enable_graph and rec_worker_max_concurrency
-    // are dual-source: runtime may read FLAGS_* while setup also needs the same
-    // value in Options.
-    FLAGS_enable_graph = !is_onerec_model;
-    FLAGS_rec_worker_max_concurrency =
-        is_onerec_model ? kOneRecEmbeddedWorkerConcurrency : 2;
-
-    // Pipeline-specific runtime toggles in the REC so path.
-    reset_pipeline_runtime_toggles();
+    reset_pipeline_runtime_toggles(&runtime_config);
     switch (pipeline_type) {
       case xllm::RecPipelineType::kLlmRecMultiRoundPipeline:
-        apply_multi_round_pipeline_toggles();
+        apply_multi_round_pipeline_toggles(&runtime_config);
         break;
       case xllm::RecPipelineType::kOneRecDefault:
       case xllm::RecPipelineType::kOneRecXAttentionPipeline:
-        apply_onerec_pipeline_toggles(&options);
+        apply_onerec_pipeline_toggles(&options, &runtime_config);
         break;
       case xllm::RecPipelineType::kLlmRecDefault:
       case xllm::RecPipelineType::kLlmRecWithMmData:
@@ -308,21 +322,26 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         return false;
     }
 
-    // Keep dual-source settings aligned with the FLAGS_* values above.
-    options.enable_graph(FLAGS_enable_graph)
-        .beam_width(FLAGS_beam_width)
-        .rec_worker_max_concurrency(FLAGS_rec_worker_max_concurrency);
+    options.enable_graph(runtime_config.enable_graph)
+        .beam_width(runtime_config.beam_width)
+        .rec_worker_max_concurrency(runtime_config.rec_worker_max_concurrency)
+        .rec_runtime_config(runtime_config);
+
     LOG(INFO) << "REC C API selected pipeline="
               << get_rec_pipeline_name(pipeline_type)
               << ", model_type=" << model_args.model_type()
-              << ", enable_rec_prefill_only=" << FLAGS_enable_rec_prefill_only
+              << ", enable_rec_prefill_only="
+              << runtime_config.enable_rec_prefill_only
               << ", enable_constrained_decoding="
-              << FLAGS_enable_constrained_decoding
-              << ", enable_prefix_cache=" << FLAGS_enable_prefix_cache
-              << ", enable_schedule_overlap=" << FLAGS_enable_schedule_overlap
-              << ", enable_chunked_prefill=" << FLAGS_enable_chunked_prefill
-              << ", enable_rec_fast_sampler=" << FLAGS_enable_rec_fast_sampler
-              << ", max_decode_rounds=" << FLAGS_max_decode_rounds;
+              << runtime_config.enable_constrained_decoding
+              << ", enable_prefix_cache=" << runtime_config.enable_prefix_cache
+              << ", enable_schedule_overlap="
+              << runtime_config.enable_schedule_overlap
+              << ", enable_chunked_prefill="
+              << runtime_config.enable_chunked_prefill
+              << ", enable_rec_fast_sampler="
+              << runtime_config.enable_rec_fast_sampler
+              << ", max_decode_rounds=" << runtime_config.max_decode_rounds;
 
     if (is_onerec_model) {
       LOG(INFO) << "Applied embedded OneRec REC defaults: block_size="
@@ -330,11 +349,13 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
                 << ", max_cache_size=" << xllm_init_options.max_cache_size
                 << ", max_seqs_per_batch="
                 << xllm_init_options.max_seqs_per_batch
-                << ", enable_graph=" << FLAGS_enable_graph
-                << ", enable_chunked_prefill=" << FLAGS_enable_chunked_prefill
-                << ", enable_rec_prefill_only=" << FLAGS_enable_rec_prefill_only
+                << ", enable_graph=" << runtime_config.enable_graph
+                << ", enable_chunked_prefill="
+                << runtime_config.enable_chunked_prefill
+                << ", enable_rec_prefill_only="
+                << runtime_config.enable_rec_prefill_only
                 << ", rec_worker_max_concurrency="
-                << FLAGS_rec_worker_max_concurrency;
+                << runtime_config.rec_worker_max_concurrency;
     }
 
 #if !defined(USE_NPU) && !defined(USE_CUDA)
@@ -364,6 +385,7 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
     handler->model_ids.clear();
     handler->model_ids.emplace_back(model_id);
     handler->pipeline_type = pipeline_type;
+    handler->runtime_config = runtime_config;
 
     handler->initialized = true;
 

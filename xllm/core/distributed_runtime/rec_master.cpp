@@ -29,6 +29,7 @@ limitations under the License.
 
 #include "common/macros.h"
 #include "common/metrics.h"
+#include "common/rec_runtime_config.h"
 #include "common/types.h"
 #include "framework/request/mm_data.h"
 #include "models/model_registry.h"
@@ -728,6 +729,7 @@ RecMaster::RecMaster(const Options& options)
       .enable_disagg_pd(options_.enable_disagg_pd())
       .enable_schedule_overlap(options_.enable_schedule_overlap())
       .enable_chunked_prefill(options_.enable_chunked_prefill())
+      .enable_prefix_cache(options_.rec_runtime_config().enable_prefix_cache)
       .instance_role(options_.instance_role())
       .kv_cache_transfer_mode(options_.kv_cache_transfer_mode())
       .enable_service_routing(options_.enable_service_routing())
@@ -750,7 +752,8 @@ RecMaster::RecMaster(const Options& options)
   auto rec_model_kind = get_rec_model_kind(model_args_.model_type());
   CHECK(rec_model_kind != RecModelKind::kNone)
       << "Unsupported rec model_type: " << model_args_.model_type();
-  auto pipeline_type = get_rec_pipeline_type(rec_model_kind);
+  auto pipeline_type =
+      get_rec_pipeline_type(rec_model_kind, options_.rec_runtime_config());
   pipeline_ = create_pipeline(pipeline_type, *this);
 
   // For LlmRec, also create mm_data pipeline for raw input interface
@@ -768,6 +771,7 @@ void RecMaster::run() {
   }
   running_.store(true, std::memory_order_relaxed);
   loop_thread_ = std::thread([this]() {
+    ScopedRecRuntimeConfig rec_runtime_scope(options_.rec_runtime_config());
     const auto timeout = absl::Milliseconds(5);
     while (!stopped_.load(std::memory_order_relaxed)) {
       // move scheduler forward
@@ -919,6 +923,7 @@ void RecMaster::schedule_request(RequestParams sp,
                          sp = std::move(sp),
                          callback = std::move(cb),
                          build_request = std::move(build_request)]() mutable {
+    ScopedRecRuntimeConfig rec_runtime_scope(options_.rec_runtime_config());
     AUTO_COUNTER(request_handling_latency_seconds_completion);
 
     SCOPE_GUARD([this] { scheduler_->decr_pending_requests(); });
@@ -950,7 +955,8 @@ std::shared_ptr<Request> RecMaster::build_request_common(
   int32_t max_context_len = model_args_.max_position_embeddings();
   if (!options_.enable_chunked_prefill()) {
     int32_t max_tokens_per_req = options_.max_tokens_per_batch();
-    if (rec_type_ == RecType::kLlmRec && is_rec_multi_round_mode()) {
+    if (rec_type_ == RecType::kLlmRec &&
+        is_rec_multi_round_mode(options_.rec_runtime_config())) {
       CHECK_GT(options_.max_seqs_per_batch(), 0)
           << "max_seqs_per_batch must be greater than 0 in multi-round mode";
       max_tokens_per_req /= options_.max_seqs_per_batch();

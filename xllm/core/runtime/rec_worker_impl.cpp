@@ -27,6 +27,7 @@ limitations under the License.
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/rec_runtime_config.h"
 #include "common/types.h"
 #include "core/common/global_flags.h"
 #include "framework/model/model_input_params.h"
@@ -335,7 +336,7 @@ void RecWorkerImpl::RecWorkPipeline::prepare_work_before_execute(
   // asynchronously scheduled data update streams.
 
   std::optional<std::unique_lock<std::mutex>> lock_guard;
-  if (FLAGS_enable_graph) {
+  if (get_rec_runtime_enable_graph()) {
     auto& capture_lock =
         ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(
             runtime_.worker.device().index());
@@ -553,7 +554,7 @@ RecWorkerImpl::OneRecWorkPipeline::OneRecWorkPipeline(
     : RecWorkPipeline(runtime),
       rec_sampler_(std::make_unique<RecSampler>(pipeline_type)),
       filter_mask_threadpool_(std::make_unique<ThreadPool>(1)) {
-  if (!FLAGS_enable_constrained_decoding) {
+  if (!get_rec_runtime_enable_constrained_decoding()) {
     return;
   }
 
@@ -663,7 +664,8 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
       rec_params.has_encoder_output || has_decoder_context;
   std::optional<folly::SemiFuture<torch::Tensor>> filter_mask_future;
   if ((runtime_.worker.driver_ || runtime_.worker.dp_driver_) &&
-      FLAGS_enable_constrained_decoding && constrained_decoding_ != nullptr &&
+      get_rec_runtime_enable_constrained_decoding() &&
+      constrained_decoding_ != nullptr &&
       sampling_params.selected_token_idxes.defined()) {
     filter_mask_future = prepare_filter_mask_async(rec_params.generated_tokens);
   }
@@ -2002,7 +2004,7 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::allocate_kv_caches_related() {
   cached_current_round_tensor_ = torch::zeros({1}, int_options);
   cached_beam_width_tensor_ = torch::zeros({1}, int_options);
 
-  if (FLAGS_enable_xattention_one_stage) {
+  if (get_rec_runtime_enable_xattention_one_stage()) {
     return;
   }
 
@@ -2425,7 +2427,7 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::prepare_two_stage_round_input(
 // TODO: implement prepare_two_stage_round_input for NPU
 #elif defined(USE_CUDA)
   auto& llm_rec_params = input.input_params.mutable_llmrec_params();
-  CHECK_EQ(FLAGS_enable_xattention_one_stage, false)
+  CHECK_EQ(get_rec_runtime_enable_xattention_one_stage(), false)
       << "prepare_two_stage_round_input should only be called when "
          "two-stage decode is enabled";
 
@@ -2572,7 +2574,7 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::prepare_input_for_current_round(
     const torch::Tensor& top_tokens,
     const BeamSearchTensors& beam_tensors) {
 #if defined(USE_CUDA)
-  if (FLAGS_enable_xattention_one_stage) {
+  if (get_rec_runtime_enable_xattention_one_stage()) {
     input.input_params.paged_kv_indices = results.paged_kv_indices;
     input.input_params.paged_kv_indptr = results.paged_kv_indptr;
     input.input_params.paged_kv_last_page_len = results.paged_kv_last_page_len;
@@ -2624,7 +2626,7 @@ RecWorkerImpl::LlmRecMultiRoundPipeline::compute_next_round_input_async(
   auto future = promise.getSemiFuture();
 
 #if defined(USE_CUDA)
-  if (FLAGS_enable_xattention_one_stage) {
+  if (get_rec_runtime_enable_xattention_one_stage()) {
     // Capture necessary data for async computation
     auto full_kv_offsets = full_kv_cache_offsets_->full_kv_offsets;
     auto full_kv_mask = full_kv_cache_offsets_->full_kv_mask;
@@ -2818,7 +2820,7 @@ RecWorkerImpl::LlmRecMultiRoundPipeline::FullKvCacheOffsets::FullKvCacheOffsets(
 
 void RecWorkerImpl::initialize_xattention_workspace() {
 #if defined(USE_CUDA)
-  if (FLAGS_enable_xattention_one_stage) {
+  if (get_rec_runtime_enable_xattention_one_stage()) {
     return;
   }
   ::xllm::layer::xattention::XAttentionWorkspace::get_instance().initialize(
@@ -2894,7 +2896,8 @@ bool RecWorkerImpl::init_model(ModelContext& context) {
       << "Unsupported rec model_type: " << model_type;
 
   // Create concurrent pipeline (not base class pipeline)
-  auto pipeline_type = get_rec_pipeline_type(rec_model_kind_);
+  auto pipeline_type =
+      get_rec_pipeline_type(rec_model_kind_, options_.rec_runtime_config());
 
   // Reserve space for model instances
   work_pipelines_.reserve(options_.rec_worker_max_concurrency());
@@ -3056,6 +3059,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> RecWorkerImpl::step_async(
   // executes (see lambda below)
   step_threadpool_->schedule_with_tid(
       [this, &input, index, promise = std::move(promise)]() mutable {
+        ScopedRecRuntimeConfig rec_runtime_scope(options_.rec_runtime_config());
         auto stream_guard =
             work_pipelines_[index]->runtime().stream->set_stream_guard();
 

@@ -12,6 +12,7 @@ cc_library(
     macros.h
     message.h
     metrics.h
+    rec_runtime_config.h
     $<$<BOOL:${USE_NPU}>:mspti_helper.h>
     options.h
     rate_limiter.h
@@ -22,6 +23,7 @@ cc_library(
     etcd_client.cpp
     global_flags.cpp
     metrics.cpp
+    rec_runtime_config.cpp
     $<$<BOOL:${USE_NPU}>:mspti_helper.cpp>
     options.cpp
     rate_limiter.cpp
@@ -61,6 +63,18 @@ cc_test(
     common
     absl::synchronization
     absl::time
+    GTest::gtest_main
+    gflags::gflags
+    glog::glog
+)
+
+cc_test(
+  NAME
+    rec_runtime_config_test
+  SRCS
+    rec_runtime_config_test.cpp
+  DEPS
+    common
     GTest::gtest_main
     gflags::gflags
     glog::glog

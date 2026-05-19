@@ -20,6 +20,7 @@ limitations under the License.
 #include <unordered_set>
 
 #include "common/global_flags.h"
+#include "common/rec_runtime_config.h"
 
 namespace xllm {
 namespace layer {
@@ -107,11 +108,13 @@ void NpuQwen3MoeDecoderLayerImpl::initialize_basic_parameters(
 
   // prefill only feature
   param.enableLcoc = is_prefill;  // false;
-  param.enableSplitFuse =
-      (FLAGS_enable_chunked_prefill || FLAGS_enable_prefix_cache) && is_prefill;
+  param.enableSplitFuse = (get_rec_runtime_enable_chunked_prefill() ||
+                           get_rec_runtime_enable_prefix_cache()) &&
+                          is_prefill;
 
   // decode only feature
-  param.enableAclGraphPagedAttention = FLAGS_enable_graph && !is_prefill;
+  param.enableAclGraphPagedAttention =
+      get_rec_runtime_enable_graph() && !is_prefill;
   param.enableInitRoutingV3 = !is_prefill;
 
   // Can be applied to prefill, but has not been tested yet
@@ -337,7 +340,8 @@ torch::Tensor NpuQwen3MoeDecoderLayerImpl::forward(
                            << "excute prefill layer fail, error code: " << st;
   } else {
     const bool use_graph_decode_input =
-        FLAGS_enable_graph && input_params.graph_buffer.tiling_data.defined();
+        get_rec_runtime_enable_graph() &&
+        input_params.graph_buffer.tiling_data.defined();
     auto& decode_node =
         use_graph_decode_input ? decode_graph_node_ : decode_eager_node_;
     build_node_variant_pack(decode_node,
@@ -432,15 +436,15 @@ void NpuQwen3MoeDecoderLayerImpl::build_node_variant_pack(
   }
 
   input_idx = WEIGHT_COUNT_PER_LAYER + 16;
-  if (is_prefill &&
-      (FLAGS_enable_chunked_prefill || FLAGS_enable_prefix_cache)) {
+  if (is_prefill && (get_rec_runtime_enable_chunked_prefill() ||
+                     get_rec_runtime_enable_prefix_cache())) {
     node.variantPack.inTensors.at(input_idx++) =
         atb_speed::Utils::AtTensor2Tensor(input_params.q_seq_lens);
     node.variantPack.inTensors.at(input_idx - 1).hostData =
         const_cast<int32_t*>(input_params.q_seq_lens_vec.data());
   }
 
-  if (!is_prefill && use_graph_decode_input &&
+  if (get_rec_runtime_enable_graph() && !is_prefill && use_graph_decode_input &&
       input_params.graph_buffer.tiling_data.defined()) {
     node.variantPack.inTensors.at(input_idx++) =
         atb_speed::Utils::AtTensor2Tensor(

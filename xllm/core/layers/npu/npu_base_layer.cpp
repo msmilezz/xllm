@@ -23,6 +23,7 @@ limitations under the License.
 #include <torch_npu/csrc/framework/utils/OpPreparation.h>
 #endif
 #include "core/common/global_flags.h"
+#include "core/common/rec_runtime_config.h"
 
 namespace xllm {
 namespace layer {
@@ -80,7 +81,7 @@ atb::Status BaseLayer::execute_node(atb_speed::Model::Node& node,
   //   However, libtorch_npu current stream is set to default stream after
   //   capture ends, causing inconsistency between ATB context and the actual
   //   execution stream
-  if (FLAGS_enable_graph) {
+  if (get_rec_runtime_enable_graph()) {
     void* stream = c10_npu::getCurrentNPUStream(device_.index()).stream();
     context_->SetExecuteStream(stream);
   }

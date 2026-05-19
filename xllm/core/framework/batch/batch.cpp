@@ -550,7 +550,7 @@ void Batch::process_sample_output(const RawForwardOutput& raw_output,
     output_targets_.clear();
   }
 
-  if (!FLAGS_enable_schedule_overlap || replace_fake_token) {
+  if (!get_rec_runtime_enable_schedule_overlap() || replace_fake_token) {
     process_beam_search();
   }
 }
@@ -679,7 +679,7 @@ void Batch::process_sample_output(const SampleOutput& sample_output,
     output_targets_.clear();
   }
 
-  if (!FLAGS_enable_schedule_overlap || replace_fake_token) {
+  if (!get_rec_runtime_enable_schedule_overlap() || replace_fake_token) {
     process_beam_search(force_requested_beam_result_size);
   }
 }
@@ -688,7 +688,7 @@ bool Batch::update_sequence_state(Sequence* seq, bool replace_fake_token) {
   // In chunked prefill case, if enable_schedule_overlap, we need the
   // prefill-or-not state of last stage, otherwise, we need the state
   // of current stage.
-  if (FLAGS_enable_chunked_prefill) {
+  if (get_rec_runtime_enable_chunked_prefill()) {
     if (!replace_fake_token && seq->is_chunked_prefill_stage()) {
       seq->pre_scheduled_step_prefill_queue().push(true);
       // if not replace_fake_token, pop out here to avoid endless growth
@@ -712,7 +712,7 @@ void Batch::append_token_for_sequence(Sequence* seq,
   // always append a token, maybe true or fake token
   if (!replace_fake_token) {
     seq->append_token(token);
-    if (FLAGS_enable_chunked_prefill) {
+    if (get_rec_runtime_enable_chunked_prefill()) {
       seq->pre_scheduled_step_prefill_queue().push(false);
       // if not replace_fake_token, pop out here to avoid endless growth
       if (seq->pre_scheduled_step_prefill_queue().size() > 2) {
@@ -722,7 +722,7 @@ void Batch::append_token_for_sequence(Sequence* seq,
   } else if (!seq->cancelled()) {
     // truely update the real token if replace_fake_token
     seq->update_last_step_token(token, token_idx);
-    if (FLAGS_enable_chunked_prefill && token_idx == 0) {
+    if (get_rec_runtime_enable_chunked_prefill() && token_idx == 0) {
       seq->pre_scheduled_step_prefill_queue().pop();
     }
   }
