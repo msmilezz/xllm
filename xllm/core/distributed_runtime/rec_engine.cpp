@@ -22,11 +22,12 @@ limitations under the License.
 #include <functional>
 #include <map>
 #include <memory>
+#include <stdexcept>
+#include <string>
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
 #include "common/rec_runtime_config.h"
-#include "framework/kv_cache/kv_cache_shape.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/parallel_state/parallel_state.h"
@@ -43,6 +44,28 @@ namespace xllm {
 namespace {
 
 constexpr int64_t kMinimalOneRecMetadataKVBlocks = 2;
+
+}  // namespace
+
+namespace {
+
+void rethrow_worker_exception(
+    size_t worker_index,
+    const folly::Try<std::optional<ForwardOutput>>& result) {
+  if (!result.hasException()) {
+    return;
+  }
+
+  try {
+    static_cast<void>(result.value());
+  } catch (const std::exception& e) {
+    throw std::runtime_error("Worker " + std::to_string(worker_index) +
+                             " failed with exception: " + e.what());
+  } catch (...) {
+    throw std::runtime_error("Worker " + std::to_string(worker_index) +
+                             " failed with unknown exception");
+  }
+}
 
 }  // namespace
 
@@ -768,10 +791,7 @@ ForwardOutput RecEngine::OneRecPrefillOnlyEnginePipeline::get_model_output(
 
   // Check all worker results for failures
   for (size_t i = 0; i < results.size(); ++i) {
-    if (results[i].hasException()) {
-      LOG(FATAL) << "Worker " << i
-                 << " failed with exception: " << results[i].exception().what();
-    }
+    rethrow_worker_exception(i, results[i]);
     CHECK(results[i].value().has_value())
         << "Worker " << i << " failed to execute model and returned no output.";
   }
@@ -1174,10 +1194,7 @@ ForwardOutput RecEngine::RecMultiRoundEnginePipeline::get_model_output(
 
   // Check all worker results for failures
   for (size_t i = 0; i < results.size(); ++i) {
-    if (results[i].hasException()) {
-      LOG(FATAL) << "Worker " << i
-                 << " failed with exception: " << results[i].exception().what();
-    }
+    rethrow_worker_exception(i, results[i]);
     CHECK(results[i].value().has_value())
         << "Worker " << i << " failed to execute model and returned no output.";
   }
