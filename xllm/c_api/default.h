@@ -107,7 +107,7 @@ const XLLM_InitOptions XLLM_INIT_REC_OPTIONS_DEFAULT = {
     .expert_parallel_degree = 0,
     .server_idx = 0,
     .beam_width = 128,
-    .max_decode_rounds = 3,
+    .max_decode_rounds = 2,
     .max_token_per_req = 1000,
     .max_memory_utilization = 0.55,
     .flashinfer_workspace_buffer_size = 134217728,
@@ -130,6 +130,7 @@ const XLLM_InitOptions XLLM_INIT_REC_OPTIONS_DEFAULT = {
     .enable_graph_mode_decode_no_padding = true,
     .enable_block_copy_kernel = false,
     .enable_topk_sorted = false,
+    .enable_rec_prefill_only = false,
     .rec_worker_max_concurrency = 2};
 
 const XLLM_RequestParams XLLM_REC_REQUEST_PARAMS_DEFAULT = {

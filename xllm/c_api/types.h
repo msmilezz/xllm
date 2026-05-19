@@ -175,6 +175,9 @@ typedef struct XLLM_CAPI_EXPORT XLLM_InitOptions {
   /** Whether to keep REC top-k outputs sorted */
   bool enable_topk_sorted;
 
+  /** Whether to enable REC prefill-only execution */
+  bool enable_rec_prefill_only;
+
   /** Maximum REC worker pipeline concurrency */
   uint32_t rec_worker_max_concurrency;
 } XLLM_InitLLMOptions;
