@@ -19,8 +19,11 @@ limitations under the License.
 #include <mstx/ms_tools_ext.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "common/global_flags.h"
 #include "core/util/rec_model_utils.h"
@@ -552,45 +555,90 @@ static const std::unordered_map<std::string, int32_t>
         {"1.ffn.gate_proj.weight", kInFfnWi0Weight},
 };
 
+static std::unordered_map<std::string, int32_t>
+build_onerec_decoder_weight_mapping() {
+  std::unordered_map<std::string, int32_t> mapping = {
+      {"layer.0.layer_norm.weight", kInLayerNormWeight},
+      {"layer.0.SelfAttention.q.weight", kInQWeight},
+      {"layer.0.SelfAttention.k.weight", kInKWeight},
+      {"layer.0.SelfAttention.v.weight", kInVWeight},
+      {"layer.0.SelfAttention.o.weight", kInSelfAttnOutWeight},
+      {"layer.0.SelfAttention.relative_attention_bias.weight",
+       kInRelativeAttentionBiasWeight},
+      {"layer.1.layer_norm.weight", kInCrossLayerNormWeight},
+      {"layer.1.EncDecAttention.q.weight", kInCrossQWeight},
+      {"layer.1.EncDecAttention.k.weight", kInCrossKWeight},
+      {"layer.1.EncDecAttention.v.weight", kInCrossVWeight},
+      {"layer.1.EncDecAttention.o.weight", kInCrossAttnOutWeight},
+      {"layer.2.layer_norm.weight", kInFinalLayerNormWeight},
+      {"layer.2.DenseReluDense.wi.weight", kInFfnWi1Weight},
+      {"layer.2.DenseReluDense.wo.weight", kInFfnWoWeight},
+      {"layer.2.DenseReluDense.gate_proj.weight", kInFfnWi0Weight},
+      // Alternative format
+      {"0.layer_norm.weight", kInLayerNormWeight},
+      {"0.SelfAttention.q.weight", kInQWeight},
+      {"0.SelfAttention.k.weight", kInKWeight},
+      {"0.SelfAttention.v.weight", kInVWeight},
+      {"0.SelfAttention.o.weight", kInSelfAttnOutWeight},
+      {"0.SelfAttention.relative_attention_bias.weight",
+       kInRelativeAttentionBiasWeight},
+      {"1.layer_norm.weight", kInCrossLayerNormWeight},
+      {"1.EncDecAttention.q.weight", kInCrossQWeight},
+      {"1.EncDecAttention.k.weight", kInCrossKWeight},
+      {"1.EncDecAttention.v.weight", kInCrossVWeight},
+      {"1.EncDecAttention.o.weight", kInCrossAttnOutWeight},
+      {"2.layer_norm.weight", kInFinalLayerNormWeight},
+      {"2.DenseReluDense.wi.weight", kInFfnWi1Weight},
+      {"2.DenseReluDense.wo.weight", kInFfnWoWeight},
+      {"2.DenseReluDense.gate_proj.weight", kInFfnWi0Weight},
+      {"2.ffn.wi.weight", kInFfnWi1Weight},
+      {"2.ffn.wo.weight", kInFfnWoWeight},
+      {"2.ffn.gate_proj.weight", kInFfnWi0Weight},
+  };
+
+  const std::vector<std::pair<std::string, std::array<int32_t, 3>>>
+      attn_quant_prefixes = {
+          {"layer.0.SelfAttention.q", {kInQDeqScale, kInQOffset, kInQScale}},
+          {"layer.0.SelfAttention.k", {kInKDeqScale, kInKOffset, kInKScale}},
+          {"layer.0.SelfAttention.v", {kInVDeqScale, kInVOffset, kInVScale}},
+          {"layer.0.SelfAttention.o",
+           {kInSelfAttnOutDeqScale, kInSelfAttnOutOffset, kInSelfAttnOutScale}},
+          {"layer.1.EncDecAttention.q",
+           {kInCrossQDeqScale, kInCrossQOffset, kInCrossQScale}},
+          {"layer.1.EncDecAttention.k",
+           {kInCrossKDeqScale, kInCrossKOffset, kInCrossKScale}},
+          {"layer.1.EncDecAttention.v",
+           {kInCrossVDeqScale, kInCrossVOffset, kInCrossVScale}},
+          {"layer.1.EncDecAttention.o",
+           {kInCrossAttnOutDeqScale,
+            kInCrossAttnOutOffset,
+            kInCrossAttnOutScale}},
+          {"0.SelfAttention.q", {kInQDeqScale, kInQOffset, kInQScale}},
+          {"0.SelfAttention.k", {kInKDeqScale, kInKOffset, kInKScale}},
+          {"0.SelfAttention.v", {kInVDeqScale, kInVOffset, kInVScale}},
+          {"0.SelfAttention.o",
+           {kInSelfAttnOutDeqScale, kInSelfAttnOutOffset, kInSelfAttnOutScale}},
+          {"1.EncDecAttention.q",
+           {kInCrossQDeqScale, kInCrossQOffset, kInCrossQScale}},
+          {"1.EncDecAttention.k",
+           {kInCrossKDeqScale, kInCrossKOffset, kInCrossKScale}},
+          {"1.EncDecAttention.v",
+           {kInCrossVDeqScale, kInCrossVOffset, kInCrossVScale}},
+          {"1.EncDecAttention.o",
+           {kInCrossAttnOutDeqScale,
+            kInCrossAttnOutOffset,
+            kInCrossAttnOutScale}},
+      };
+  for (const auto& [prefix, ids] : attn_quant_prefixes) {
+    mapping.emplace(prefix + ".deq_scale", ids[0]);
+    mapping.emplace(prefix + ".input_offset", ids[1]);
+    mapping.emplace(prefix + ".input_scale", ids[2]);
+  }
+  return mapping;
+}
+
 static const std::unordered_map<std::string, int32_t>
-    kOneRecDecoderWeightMapping = {
-        {"layer.0.layer_norm.weight", kInLayerNormWeight},
-        {"layer.0.SelfAttention.q.weight", kInQWeight},
-        {"layer.0.SelfAttention.k.weight", kInKWeight},
-        {"layer.0.SelfAttention.v.weight", kInVWeight},
-        {"layer.0.SelfAttention.o.weight", kInSelfAttnOutWeight},
-        {"layer.0.SelfAttention.relative_attention_bias.weight",
-         kInRelativeAttentionBiasWeight},
-        {"layer.1.layer_norm.weight", kInCrossLayerNormWeight},
-        {"layer.1.EncDecAttention.q.weight", kInCrossQWeight},
-        {"layer.1.EncDecAttention.k.weight", kInCrossKWeight},
-        {"layer.1.EncDecAttention.v.weight", kInCrossVWeight},
-        {"layer.1.EncDecAttention.o.weight", kInCrossAttnOutWeight},
-        {"layer.2.layer_norm.weight", kInFinalLayerNormWeight},
-        {"layer.2.DenseReluDense.wi.weight", kInFfnWi1Weight},
-        {"layer.2.DenseReluDense.wo.weight", kInFfnWoWeight},
-        {"layer.2.DenseReluDense.gate_proj.weight", kInFfnWi0Weight},
-        // Alternative format
-        {"0.layer_norm.weight", kInLayerNormWeight},
-        {"0.SelfAttention.q.weight", kInQWeight},
-        {"0.SelfAttention.k.weight", kInKWeight},
-        {"0.SelfAttention.v.weight", kInVWeight},
-        {"0.SelfAttention.o.weight", kInSelfAttnOutWeight},
-        {"0.SelfAttention.relative_attention_bias.weight",
-         kInRelativeAttentionBiasWeight},
-        {"1.layer_norm.weight", kInCrossLayerNormWeight},
-        {"1.EncDecAttention.q.weight", kInCrossQWeight},
-        {"1.EncDecAttention.k.weight", kInCrossKWeight},
-        {"1.EncDecAttention.v.weight", kInCrossVWeight},
-        {"1.EncDecAttention.o.weight", kInCrossAttnOutWeight},
-        {"2.layer_norm.weight", kInFinalLayerNormWeight},
-        {"2.DenseReluDense.wi.weight", kInFfnWi1Weight},
-        {"2.DenseReluDense.wo.weight", kInFfnWoWeight},
-        {"2.DenseReluDense.gate_proj.weight", kInFfnWi0Weight},
-        {"2.ffn.wi.weight", kInFfnWi1Weight},
-        {"2.ffn.wo.weight", kInFfnWoWeight},
-        {"2.ffn.gate_proj.weight", kInFfnWi0Weight},
-};
+    kOneRecDecoderWeightMapping = build_onerec_decoder_weight_mapping();
 
 static std::unordered_map<std::string, int32_t>
 get_onerec_decoder_moe_weight_mapping() {
@@ -630,12 +678,18 @@ static const std::unordered_map<std::string, int32_t>
 
 static const std::unordered_map<int32_t, int32_t> kOneRecWeightShard = {
     {kInQWeight, 0},
+    {kInQDeqScale, 0},
     {kInKWeight, 0},
+    {kInKDeqScale, 0},
     {kInVWeight, 0},
+    {kInVDeqScale, 0},
     {kInSelfAttnOutWeight, 1},
     {kInCrossQWeight, 0},
+    {kInCrossQDeqScale, 0},
     {kInCrossKWeight, 0},
+    {kInCrossKDeqScale, 0},
     {kInCrossVWeight, 0},
+    {kInCrossVDeqScale, 0},
     {kInCrossAttnOutWeight, 1},
     {kInFfnWi0Weight, 0},
     {kInFfnWi1Weight, 0},
@@ -656,6 +710,84 @@ static const std::unordered_map<int32_t, int32_t> kOneRecWeightShard = {
     {kInSharedExpertGateScale, 0},
     {kInSharedExpertGateOffset, 0},
 };
+
+bool IsOneRecPlaceholderTensor(const torch::Tensor& tensor) {
+  if (!tensor.defined()) {
+    return true;
+  }
+  const auto sizes = tensor.sizes();
+  return sizes.size() == 2 && sizes[0] == 1;
+}
+
+bool IsOneRecAttnScaleIndex(int32_t index) {
+  switch (index) {
+    case kInQDeqScale:
+    case kInQOffset:
+    case kInQScale:
+    case kInKDeqScale:
+    case kInKOffset:
+    case kInKScale:
+    case kInVDeqScale:
+    case kInVOffset:
+    case kInVScale:
+    case kInSelfAttnOutDeqScale:
+    case kInSelfAttnOutOffset:
+    case kInSelfAttnOutScale:
+    case kInCrossQDeqScale:
+    case kInCrossQOffset:
+    case kInCrossQScale:
+    case kInCrossKDeqScale:
+    case kInCrossKOffset:
+    case kInCrossKScale:
+    case kInCrossVDeqScale:
+    case kInCrossVOffset:
+    case kInCrossVScale:
+    case kInCrossAttnOutDeqScale:
+    case kInCrossAttnOutOffset:
+    case kInCrossAttnOutScale:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void ApplyOneRecAttnW8A8Param(atb_speed::onerec::BlockLayerParam& param) {
+  if (param.packQuantType.empty()) {
+    param.packQuantType = {static_cast<int>(PackType::ALL_W8A8),
+                           static_cast<int>(PackType::ALL_FP)};
+  } else {
+    param.packQuantType[0] = static_cast<int>(PackType::ALL_W8A8);
+  }
+  param.linearDescs = {
+      static_cast<int>(atb_speed::common::LinearDesc::W8A8_PER_TENSOR_DESC),
+      static_cast<int>(atb_speed::common::LinearDesc::W8A8_PER_TENSOR_DESC),
+      static_cast<int>(atb_speed::common::LinearDesc::W8A8_PER_TENSOR_DESC),
+      static_cast<int>(atb_speed::common::LinearDesc::W8A8_PER_TENSOR_DESC)};
+  param.linearQuantType = {static_cast<int>(LinearType::INT),
+                           static_cast<int>(LinearType::INVALID),
+                           static_cast<int>(LinearType::INVALID),
+                           static_cast<int>(LinearType::INT),
+                           static_cast<int>(LinearType::FP),
+                           static_cast<int>(LinearType::INVALID),
+                           static_cast<int>(LinearType::FP)};
+  // ACLNN QuantMatmulV4 matches Qwen Attention: physical [k, n] NZ and
+  // transposeB=false. Leave FFN/MoE slots as TRANSPOSE.
+  if (param.linearTransposeType.size() < 4) {
+    param.linearTransposeType.assign(
+        7, static_cast<int>(TransposeType::TRANSPOSE));
+  }
+  param.linearTransposeType[0] = static_cast<int>(TransposeType::NOT_TRANSPOSE);
+  param.linearTransposeType[1] = static_cast<int>(TransposeType::NOT_TRANSPOSE);
+  param.linearTransposeType[2] = static_cast<int>(TransposeType::NOT_TRANSPOSE);
+  param.linearTransposeType[3] = static_cast<int>(TransposeType::NOT_TRANSPOSE);
+  param.matmulBackend = atb_speed::common::OpBackend::ACLNN;
+}
+
+const char* OneRecMatmulBackendName(int32_t backend) {
+  return backend == static_cast<int32_t>(atb_speed::common::OpBackend::ACLNN)
+             ? "ACLNN"
+             : "ATB";
+}
 
 }  // namespace
 
@@ -869,6 +1001,7 @@ void NpuOneRecBlockLayerImpl::verify_loaded_weights(
   // verify_loaded_weights() runs before merge_loaded_weights().
   // Only allow placeholders for tensors that are intentionally absent before
   // merge in the current mode.
+  const bool attn_w8a8 = detect_attn_w8a8();
   std::set<int32_t> allowed_placeholders;
   if (prefill_param_.use_moe) {
     // MoE decoder path does not consume dense FFN gate/up/down tensors.
@@ -876,12 +1009,28 @@ void NpuOneRecBlockLayerImpl::verify_loaded_weights(
     allowed_placeholders.insert(kInFfnWi1Weight);
     allowed_placeholders.insert(kInFfnWoWeight);
   }
+  // BF16 graph3 has no Attention scale tensors. Require them only after
+  // the checkpoint is detected as Attention W8A8.
+  if (!attn_w8a8) {
+    for (const auto& [name, index] : *weight_mapping) {
+      if (IsOneRecAttnScaleIndex(index)) {
+        allowed_placeholders.insert(index);
+      }
+    }
+  }
   for (const auto& [name, index] : *weight_mapping) {
-    const auto sizes = at_weight_tensors_[index].sizes();
-    const bool is_placeholder = (sizes.size() == 2 && sizes[0] == 1);
+    const bool is_placeholder =
+        IsOneRecPlaceholderTensor(at_weight_tensors_[index]);
     const bool expected_placeholder = allowed_placeholders.count(index) > 0;
     const bool is_relative_bias = (index == kInRelativeAttentionBiasWeight);
-    if (is_placeholder && !expected_placeholder && !is_relative_bias) {
+    const bool optional_offset =
+        attn_w8a8 &&
+        (index == kInQOffset || index == kInKOffset || index == kInVOffset ||
+         index == kInSelfAttnOutOffset || index == kInCrossQOffset ||
+         index == kInCrossKOffset || index == kInCrossVOffset ||
+         index == kInCrossAttnOutOffset);
+    if (is_placeholder && !expected_placeholder && !is_relative_bias &&
+        !optional_offset) {
       CHECK(false) << "weight is not loaded for " << prefix << name;
     }
   }
@@ -962,13 +1111,179 @@ bool NpuOneRecBlockLayerImpl::validate_decoder_moe_weights(
   return true;
 }
 
+bool NpuOneRecBlockLayerImpl::detect_attn_w8a8() const {
+  if (!is_decoder_) {
+    return false;
+  }
+  const auto& q_weight = at_weight_tensors_[kInQWeight];
+  if (q_weight.defined() && q_weight.scalar_type() == torch::kInt8 &&
+      !IsOneRecPlaceholderTensor(q_weight)) {
+    return true;
+  }
+  const auto& q_deq = at_weight_tensors_[kInQDeqScale];
+  return q_deq.defined() && !IsOneRecPlaceholderTensor(q_deq) &&
+         q_deq.numel() > 1;
+}
+
+void NpuOneRecBlockLayerImpl::apply_attn_w8a8_graph_params() {
+  ApplyOneRecAttnW8A8Param(prefill_param_);
+  ApplyOneRecAttnW8A8Param(prefill_param_atb_);
+  ApplyOneRecAttnW8A8Param(decode_param_);
+  if (use_legacy_onerec_prefill_only_contract()) {
+    ApplyOneRecAttnW8A8Param(decoder_prefill_only_decode_param_);
+    ApplyOneRecAttnW8A8Param(decoder_prefill_only_decode_param_atb_);
+  }
+}
+
+void NpuOneRecBlockLayerImpl::merge_attn_w8a8_tensors() {
+  const auto to_device = [this](torch::Tensor tensor) {
+    return tensor.defined() ? tensor.to(device_) : tensor;
+  };
+  const auto prepare_deq_scale = [this, &to_device](torch::Tensor tensor) {
+    CHECK(tensor.defined() && !IsOneRecPlaceholderTensor(tensor))
+        << "OneRec Attention W8A8 missing deq_scale, layer_id=" << layer_id_;
+    return to_device(tensor.reshape({-1}).to(torch::kFloat32).contiguous());
+  };
+  const auto prepare_input_scale = [this, &to_device](torch::Tensor tensor,
+                                                      const char* name) {
+    CHECK(tensor.defined() && !IsOneRecPlaceholderTensor(tensor))
+        << "OneRec Attention W8A8 missing " << name
+        << ", layer_id=" << layer_id_;
+    return to_device(tensor.reshape({1}).to(dtype_).contiguous());
+  };
+  const auto prepare_input_offset = [this, &to_device](torch::Tensor tensor) {
+    if (!tensor.defined() || IsOneRecPlaceholderTensor(tensor)) {
+      return torch::zeros(
+          {1}, torch::TensorOptions().dtype(torch::kInt8).device(device_));
+    }
+    return to_device(tensor.reshape({1}).to(torch::kInt8).contiguous());
+  };
+  const auto prepare_zero_bias = [this](int64_t n) {
+    return torch::zeros(
+        {n}, torch::TensorOptions().dtype(torch::kInt32).device(device_));
+  };
+  const auto prepare_int8_weight = [this](torch::Tensor weight) {
+    CHECK(weight.defined() && weight.scalar_type() == torch::kInt8)
+        << "OneRec Attention W8A8 weight must be int8, got "
+        << (weight.defined() ? weight.scalar_type() : torch::kFloat);
+    CHECK(weight.dim() == 2)
+        << "OneRec Attention W8A8 weight must be 2D [n, k], got dim="
+        << weight.dim() << ", layer_id=" << layer_id_;
+    weight = weight.to(device_);
+    if (weight.device().type() == torch::DeviceType::PrivateUse1 &&
+        at_npu::native::get_npu_format(weight) != ACL_FORMAT_ND) {
+      weight = at_npu::native::npu_format_cast(weight, ACL_FORMAT_ND);
+    }
+    // Qwen Attention + ACLNN QuantMatmul: [n, k] -> [k, n] then FRACTAL_NZ.
+    // Do not contiguous() after the NZ cast; that drops format 29.
+    weight = weight.transpose(0, 1).contiguous();
+    return at_npu::native::npu_format_cast(weight, ACL_FORMAT_FRACTAL_NZ);
+  };
+
+  at_weight_tensors_[kInQDeqScale] =
+      torch::cat({prepare_deq_scale(at_weight_tensors_[kInQDeqScale]),
+                  prepare_deq_scale(at_weight_tensors_[kInKDeqScale]),
+                  prepare_deq_scale(at_weight_tensors_[kInVDeqScale])},
+                 0);
+  at_weight_tensors_[kInQScale] =
+      prepare_input_scale(at_weight_tensors_[kInQScale], "q.input_scale");
+  at_weight_tensors_[kInQOffset] =
+      prepare_input_offset(at_weight_tensors_[kInQOffset]);
+  at_weight_tensors_[kInQBias] =
+      prepare_zero_bias(at_weight_tensors_[kInQWeight].size(0));
+
+  at_weight_tensors_[kInSelfAttnOutDeqScale] =
+      prepare_deq_scale(at_weight_tensors_[kInSelfAttnOutDeqScale]);
+  at_weight_tensors_[kInSelfAttnOutScale] = prepare_input_scale(
+      at_weight_tensors_[kInSelfAttnOutScale], "o.input_scale");
+  at_weight_tensors_[kInSelfAttnOutOffset] =
+      prepare_input_offset(at_weight_tensors_[kInSelfAttnOutOffset]);
+  at_weight_tensors_[kInSelfAttnOutBias] =
+      prepare_zero_bias(at_weight_tensors_[kInSelfAttnOutWeight].size(0));
+
+  const std::array<int32_t, 4> cross_weights = {
+      kInCrossQWeight, kInCrossKWeight, kInCrossVWeight, kInCrossAttnOutWeight};
+  const std::array<int32_t, 4> cross_deqs = {kInCrossQDeqScale,
+                                             kInCrossKDeqScale,
+                                             kInCrossVDeqScale,
+                                             kInCrossAttnOutDeqScale};
+  const std::array<int32_t, 4> cross_scales = {
+      kInCrossQScale, kInCrossKScale, kInCrossVScale, kInCrossAttnOutScale};
+  const std::array<int32_t, 4> cross_offsets = {
+      kInCrossQOffset, kInCrossKOffset, kInCrossVOffset, kInCrossAttnOutOffset};
+  const std::array<int32_t, 4> cross_biases = {
+      kInCrossQBias, kInCrossKBias, kInCrossVBias, kInCrossAttnOutBias};
+  const char* cross_scale_names[4] = {"cross_q.input_scale",
+                                      "cross_k.input_scale",
+                                      "cross_v.input_scale",
+                                      "cross_o.input_scale"};
+  for (size_t i = 0; i < cross_weights.size(); ++i) {
+    CHECK(!IsOneRecPlaceholderTensor(at_weight_tensors_[cross_weights[i]]))
+        << "OneRec Attention W8A8 missing Cross weight slot " << i
+        << ", layer_id=" << layer_id_;
+    at_weight_tensors_[cross_deqs[i]] =
+        prepare_deq_scale(at_weight_tensors_[cross_deqs[i]]);
+    at_weight_tensors_[cross_scales[i]] = prepare_input_scale(
+        at_weight_tensors_[cross_scales[i]], cross_scale_names[i]);
+    at_weight_tensors_[cross_offsets[i]] =
+        prepare_input_offset(at_weight_tensors_[cross_offsets[i]]);
+    at_weight_tensors_[cross_biases[i]] =
+        prepare_zero_bias(at_weight_tensors_[cross_weights[i]].size(0));
+    at_weight_tensors_[cross_weights[i]] =
+        prepare_int8_weight(at_weight_tensors_[cross_weights[i]]);
+  }
+
+  at_weight_tensors_[kInQWeight] =
+      prepare_int8_weight(at_weight_tensors_[kInQWeight]);
+  at_weight_tensors_[kInSelfAttnOutWeight] =
+      prepare_int8_weight(at_weight_tensors_[kInSelfAttnOutWeight]);
+
+  // ATB RMSNorm QUANT_INT8 always consumes beta. Qwen fills it with 1D
+  // zeros matching gamma; the default OneRec placeholder is [1, hidden]
+  // and fails Setup (error 8).
+  const auto zero_norm_bias_like = [this](int32_t bias_index,
+                                          int32_t weight_index) {
+    const auto& weight = at_weight_tensors_[weight_index];
+    CHECK(weight.defined() && !IsOneRecPlaceholderTensor(weight))
+        << "OneRec Attention W8A8 missing RMSNorm weight slot " << weight_index
+        << ", layer_id=" << layer_id_;
+    at_weight_tensors_[bias_index] = torch::zeros(
+        weight.sizes(),
+        torch::TensorOptions().dtype(weight.scalar_type()).device(device_));
+  };
+  zero_norm_bias_like(kInLayerNormBias, kInLayerNormWeight);
+  zero_norm_bias_like(kInInputNormNewBias, kInLayerNormWeight);
+  if (!IsOneRecPlaceholderTensor(at_weight_tensors_[kInCrossLayerNormWeight])) {
+    zero_norm_bias_like(kInCrossLayerNormBias, kInCrossLayerNormWeight);
+    zero_norm_bias_like(kInCrossLayerNormNewBias, kInCrossLayerNormWeight);
+  }
+
+  const auto clear_packed_slot = [this](int32_t index) {
+    at_weight_tensors_[index] =
+        torch::zeros({1}, torch::TensorOptions().device(device_));
+  };
+  clear_packed_slot(kInKDeqScale);
+  clear_packed_slot(kInVDeqScale);
+  clear_packed_slot(kInKScale);
+  clear_packed_slot(kInVScale);
+  clear_packed_slot(kInKOffset);
+  clear_packed_slot(kInVOffset);
+  clear_packed_slot(kInKBias);
+  clear_packed_slot(kInVBias);
+}
+
 void NpuOneRecBlockLayerImpl::merge_loaded_weights() {
-  const bool q_loaded = !(at_weight_tensors_[kInQWeight].sizes().size() == 2 &&
-                          at_weight_tensors_[kInQWeight].sizes()[0] == 1);
-  const bool k_loaded = !(at_weight_tensors_[kInKWeight].sizes().size() == 2 &&
-                          at_weight_tensors_[kInKWeight].sizes()[0] == 1);
-  const bool v_loaded = !(at_weight_tensors_[kInVWeight].sizes().size() == 2 &&
-                          at_weight_tensors_[kInVWeight].sizes()[0] == 1);
+  attn_w8a8_enabled_ = detect_attn_w8a8();
+  if (attn_w8a8_enabled_) {
+    apply_attn_w8a8_graph_params();
+  }
+
+  const bool q_loaded =
+      !IsOneRecPlaceholderTensor(at_weight_tensors_[kInQWeight]);
+  const bool k_loaded =
+      !IsOneRecPlaceholderTensor(at_weight_tensors_[kInKWeight]);
+  const bool v_loaded =
+      !IsOneRecPlaceholderTensor(at_weight_tensors_[kInVWeight]);
   CHECK(q_loaded && k_loaded && v_loaded)
       << "OneRec QKV weights are not properly loaded.";
 
@@ -988,6 +1303,9 @@ void NpuOneRecBlockLayerImpl::merge_loaded_weights() {
 
   // Keep decoder cross-attention Q/K/V unpacked for current OneRec ATB
   // contract. Do not merge IN_CROSS_{Q,K,V}_WEIGHT here.
+  if (attn_w8a8_enabled_) {
+    merge_attn_w8a8_tensors();
+  }
 
   if (!prefill_param_.use_moe) {
     const bool wi0_loaded =
@@ -1020,7 +1338,13 @@ void NpuOneRecBlockLayerImpl::merge_loaded_weights() {
       at_weight_tensors_[i] = torch::zeros(
           {1, 1}, torch::TensorOptions().device(device_).dtype(dtype_));
     }
-    if (!at_weight_tensors_[i].is_contiguous()) {
+    // FRACTAL_NZ storage is not PyTorch-contiguous. contiguous() would
+    // drop the format and break ACLNN QuantBatchMatmul Setup.
+    const bool is_nz = at_weight_tensors_[i].device().type() ==
+                           torch::DeviceType::PrivateUse1 &&
+                       at_npu::native::get_npu_format(at_weight_tensors_[i]) ==
+                           ACL_FORMAT_FRACTAL_NZ;
+    if (!is_nz && !at_weight_tensors_[i].is_contiguous()) {
       at_weight_tensors_[i] = at_weight_tensors_[i].contiguous();
     }
   }
@@ -1030,9 +1354,44 @@ void NpuOneRecBlockLayerImpl::merge_loaded_weights() {
         atb_speed::Utils::AtTensor2Tensor(at_weight_tensors_[i]);
   }
 
-  LOG(INFO) << "OneRec BlockLayer merge_loaded_weights calling init_layer"
-            << ", layer_role=" << (is_decoder_ ? "decoder" : "encoder")
-            << ", layer_id=" << layer_id_ << ", weight_count=" << weight_count;
+  const auto npu_format_or_neg = [](const torch::Tensor& tensor) -> int32_t {
+    if (!tensor.defined() ||
+        tensor.device().type() != torch::DeviceType::PrivateUse1) {
+      return -1;
+    }
+    return at_npu::native::get_npu_format(tensor);
+  };
+  LOG(INFO)
+      << "OneRec BlockLayer merge_loaded_weights calling init_layer"
+      << ", layer_role=" << (is_decoder_ ? "decoder" : "encoder")
+      << ", layer_id=" << layer_id_ << ", weight_count=" << weight_count
+      << ", attn_w8a8=" << (attn_w8a8_enabled_ ? "on" : "off")
+      << ", q_weight_dtype=" << at_weight_tensors_[kInQWeight].scalar_type()
+      << ", q_weight_sizes=" << at_weight_tensors_[kInQWeight].sizes()
+      << ", q_weight_format="
+      << npu_format_or_neg(at_weight_tensors_[kInQWeight])
+      << ", q_deq=" << at_weight_tensors_[kInQDeqScale].scalar_type()
+      << at_weight_tensors_[kInQDeqScale].sizes()
+      << ", q_scale=" << at_weight_tensors_[kInQScale].scalar_type()
+      << at_weight_tensors_[kInQScale].sizes()
+      << ", q_offset=" << at_weight_tensors_[kInQOffset].scalar_type()
+      << at_weight_tensors_[kInQOffset].sizes()
+      << ", q_bias=" << at_weight_tensors_[kInQBias].scalar_type()
+      << at_weight_tensors_[kInQBias].sizes() << ", cross_q_weight_dtype="
+      << at_weight_tensors_[kInCrossQWeight].scalar_type()
+      << ", cross_q_weight_sizes="
+      << at_weight_tensors_[kInCrossQWeight].sizes()
+      << ", cross_q_weight_format="
+      << npu_format_or_neg(at_weight_tensors_[kInCrossQWeight])
+      << ", cross_q_deq=" << at_weight_tensors_[kInCrossQDeqScale].scalar_type()
+      << at_weight_tensors_[kInCrossQDeqScale].sizes()
+      << ", cross_q_scale=" << at_weight_tensors_[kInCrossQScale].scalar_type()
+      << at_weight_tensors_[kInCrossQScale].sizes() << ", cross_q_offset="
+      << at_weight_tensors_[kInCrossQOffset].scalar_type()
+      << at_weight_tensors_[kInCrossQOffset].sizes()
+      << ", cross_q_bias=" << at_weight_tensors_[kInCrossQBias].scalar_type()
+      << at_weight_tensors_[kInCrossQBias].sizes() << ", matmulBackend="
+      << OneRecMatmulBackendName(prefill_param_.matmulBackend);
   const int64_t init_status = init_layer();
   LOG(INFO) << "OneRec BlockLayer merge_loaded_weights init_layer returned"
             << ", layer_role=" << (is_decoder_ ? "decoder" : "encoder")
@@ -1086,6 +1445,15 @@ void NpuOneRecBlockLayerImpl::load_state_dict(const StateDict& state_dict) {
                                         const std::string& tensor_name) {
     if (absl::EndsWith(tensor_name, "deq_scale") &&
         torch_dtype_ == "bfloat16") {
+      return;
+    }
+    if (absl::EndsWith(tensor_name, "input_offset")) {
+      return;
+    }
+    if (absl::EndsWith(tensor_name, "input_scale")) {
+      if (tensor.dtype() == torch::kFloat32) {
+        tensor = tensor.to(target_weight_dtype());
+      }
       return;
     }
     if (tensor.dtype() != torch::kInt8 && tensor.dtype() != torch::kInt32 &&
@@ -1250,8 +1618,10 @@ int64_t NpuOneRecBlockLayerImpl::init_layer() {
     CHECK_OPERATION_STATUS_RETURN(init_attn_mask());
   }
   CHECK_OPERATION_STATUS_RETURN(init_node(prefill_node_, prefill_param_));
-  if (kEnableOneRecAclnnAttentionLinear &&
-      kOneRecAclnnAttentionLinearMinTokens > 0) {
+  const bool init_atb_small_token_nodes =
+      !attn_w8a8_enabled_ && kEnableOneRecAclnnAttentionLinear &&
+      kOneRecAclnnAttentionLinearMinTokens > 0;
+  if (init_atb_small_token_nodes) {
     CHECK_OPERATION_STATUS_RETURN(
         init_node(prefill_node_atb_, prefill_param_atb_));
   }
@@ -1260,21 +1630,28 @@ int64_t NpuOneRecBlockLayerImpl::init_layer() {
       CHECK_OPERATION_STATUS_RETURN(
           init_node(decoder_prefill_only_decode_node_,
                     decoder_prefill_only_decode_param_));
-      if (kEnableOneRecAclnnAttentionLinear &&
-          kOneRecAclnnAttentionLinearMinTokens > 0) {
+      if (init_atb_small_token_nodes) {
         CHECK_OPERATION_STATUS_RETURN(
             init_node(decoder_prefill_only_decode_node_atb_,
                       decoder_prefill_only_decode_param_atb_));
       }
       LOG(INFO) << "OneRec BlockLayer init_layer success"
                 << ", layer_role=" << (is_decoder_ ? "decoder" : "encoder")
-                << ", layer_id=" << layer_id_ << ", status=" << atb::NO_ERROR;
+                << ", layer_id=" << layer_id_
+                << ", attn_w8a8=" << (attn_w8a8_enabled_ ? "on" : "off")
+                << ", matmulBackend="
+                << OneRecMatmulBackendName(prefill_param_.matmulBackend)
+                << ", status=" << atb::NO_ERROR;
       return atb::NO_ERROR;
     }
     const int64_t decode_status = init_node(decode_node_, decode_param_);
     LOG(INFO) << "OneRec BlockLayer init_layer node returned"
               << ", node=decoder-decode"
-              << ", layer_id=" << layer_id_ << ", status=" << decode_status;
+              << ", layer_id=" << layer_id_
+              << ", attn_w8a8=" << (attn_w8a8_enabled_ ? "on" : "off")
+              << ", matmulBackend="
+              << OneRecMatmulBackendName(decode_param_.matmulBackend)
+              << ", status=" << decode_status;
     CHECK_OPERATION_STATUS_RETURN(decode_status);
   } else {
     LOG(INFO) << "OneRec BlockLayer init_layer skip decode node"
@@ -1358,7 +1735,7 @@ torch::Tensor NpuOneRecBlockLayerImpl::forward(
   const bool is_first_prefill = onerec_params->is_first_prefill;
   const int64_t ntokens = x.dim() >= 1 ? x.size(0) : 1;
   const bool use_atb_small_tokens =
-      kEnableOneRecAclnnAttentionLinear &&
+      !attn_w8a8_enabled_ && kEnableOneRecAclnnAttentionLinear &&
       kOneRecAclnnAttentionLinearMinTokens > 0 && ntokens > 0 &&
       ntokens < kOneRecAclnnAttentionLinearMinTokens;
 

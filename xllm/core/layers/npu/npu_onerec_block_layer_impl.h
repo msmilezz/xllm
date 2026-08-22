@@ -136,6 +136,9 @@ class NpuOneRecBlockLayerImpl final : public BaseLayer {
                                       bool transpose = false);
   int32_t extract_expert_index(const std::string& name);
   std::string extract_endswith(const std::string& input);
+  bool detect_attn_w8a8() const;
+  void apply_attn_w8a8_graph_params();
+  void merge_attn_w8a8_tensors();
 
   atb_speed::Model::Node prefill_node_;
   atb_speed::Model::Node prefill_node_atb_;
@@ -164,6 +167,7 @@ class NpuOneRecBlockLayerImpl final : public BaseLayer {
   int32_t device_id_ = 0;
   bool is_decoder_ = false;
   int32_t layer_id_ = 0;
+  bool attn_w8a8_enabled_ = false;
 
   std::unordered_map<std::string, std::vector<torch::Tensor>> experts_weights_;
   torch::Tensor fused_expert_weight1_scale_;

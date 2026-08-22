@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "npu_base_layer.h"
 
+#include <sstream>
+
 #ifdef TORCH_HIGHER_THAN_PTA6
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 #include <torch_npu/csrc/framework/OpCommand.h>
@@ -122,7 +124,28 @@ atb::Status BaseLayer::execute_node(atb_speed::Model::Node& node,
                                         context_,
                                         device_id);
   if (st != 0) {
-    LOG(ERROR) << " setup layer node fail, not call execute";
+    LOG(ERROR) << " setup layer node fail, not call execute, status=" << st
+               << ", name=" << name_ << ", node_id=" << node_id
+               << ", inTensors=" << node.variantPack.inTensors.size();
+    const size_t dump_n = node.variantPack.inTensors.size() < 80
+                              ? node.variantPack.inTensors.size()
+                              : 80;
+    for (size_t i = 0; i < dump_n; ++i) {
+      const auto& t = node.variantPack.inTensors[i];
+      std::ostringstream oss;
+      oss << "  setup_fail in[" << i << "] dtype=" << t.desc.dtype
+          << " format=" << t.desc.format << " dimNum=" << t.desc.shape.dimNum
+          << " dims=";
+      for (uint32_t d = 0; d < t.desc.shape.dimNum; ++d) {
+        oss << t.desc.shape.dims[d];
+        if (d + 1 < t.desc.shape.dimNum) {
+          oss << ",";
+        }
+      }
+      oss << " data=" << (t.deviceData != nullptr ? "dev" : "null")
+          << " host=" << (t.hostData != nullptr ? "yes" : "no");
+      LOG(ERROR) << oss.str();
+    }
     return st;
   }
 
