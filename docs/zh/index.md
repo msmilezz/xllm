@@ -63,4 +63,5 @@ xLLM 提供了强大的智能计算能力，通过硬件系统的算力优化与
 
 - [Graph Mode 设计文档](design/graph_mode_design.md)
 - [生成式推荐设计文档](design/generative_recommendation_design.md)
+- [OneRec Decoder Attention W8A8 方案](design/onerec_attn_w8a8_plan.md)
 

@@ -55,3 +55,4 @@ xLLM对包括Qwen2-VL，MiniCPMV在内的多种多模态模型提供全面的支
 
 - [Graph Mode 设计文档](../design/graph_mode_design.md)
 - [生成式推荐设计文档](../design/generative_recommendation_design.md)
+- [OneRec Decoder Attention W8A8 方案](../design/onerec_attn_w8a8_plan.md)
