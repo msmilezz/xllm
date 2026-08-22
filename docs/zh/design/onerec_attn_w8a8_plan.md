@@ -10,6 +10,7 @@
 
 - [生成式推荐设计文档](generative_recommendation_design.md)
 - [Graph Mode 设计文档](graph_mode_design.md)
+- [模型侧交付说明](onerec_attn_w8a8_model_handoff.md)（给模型 / 转换同学转发）
 
 ---
 
@@ -202,7 +203,7 @@ XAttention / CrossAttention kernel、`select_unshared_kv`、beam search、MoE GM
 
 ### 6.1 导出 Decoder Attention W8A8 权重（阻塞项）
 
-现有 graph3 Attention 是 BF16，没有 `deq_scale`，不改代码也跑不起来 W8A8。
+现有 graph3 Attention 是 BF16，没有 `deq_scale`，不改代码也跑不起来 W8A8。给模型 / 转换同学的可转发说明见 [模型侧交付说明](onerec_attn_w8a8_model_handoff.md)。
 
 离线 PTQ（脚本可放 `tools/`，也可用现有量化工具链）：
 
@@ -262,8 +263,9 @@ W8A8 算子必须走 thread-local ACLNN cache 和 per-stream queue。不要为�
 
 ## 9. 非目标（本轮不做）
 
-- `beam_width` 1024 / 2048
-- 修改 BeamSearch「`beam_width == top_k`」契约、抬 `RecConstrainedTopK` 的 `top_k≤512`
+> 更新：`beam_width` 1024 / 2048 已在后续改动中放开，见第 9.1 节；
+> 「`beam_width == top_k`」契约经验证无法解除，原因见第 9.2 节。本节其余条目仍然成立。
+
 - KV cache int8、softmax int8、Encoder W8A8
 - Attention 走 `w8a8_dynamic`
 - XAttention `qNBlockTile`、lm_head INT8、融合约束 topk（不物化全表 logits）
@@ -271,3 +273,32 @@ W8A8 算子必须走 thread-local ACLNN cache 和 per-stream queue。不要为�
 - 张量并行（`world_size=1`）
 
 这些在更大 beam 下会重新变成问题，但不阻塞本方案。
+
+### 9.1 已放开：beam_width 1024 / 2048
+
+- `kRecConstrainedTopKMaxK` 512 → 1024（UB 约 132KB / 192KB）。
+- fused 门控 `kRecConstrainedTopKFusedMaxK` 同步抬到 1024；超过上限的请求回落到
+  composite 选择器而不是报错，所以 `beam_width=2048` 仍可跑通，只是三轮都走 composite。
+- API 层 `top_logprobs` 的硬上限从 2000 放宽到 `max(2000, beam_width)`，
+  否则 `beam_width=2048` 的请求在参数校验阶段就会被拒。
+- `BeamSearchGroup` 的 `top_tokens_buf` 原按 `top_k²` 分配（beam=2048 时达 16MB），
+  改为按实际用量分配。
+
+### 9.2 已否决：按 step 裁剪 top_k
+
+直觉上 round≥1 可以把 top-k 收窄到该 step 的最大 degree
+（jdsy 词表下 `max_prefix1_degree=415`、`max_prefix2_degree=93`），因为超出 degree 的
+top-k 列必然是 padding（logprob `-1e20`）。实测该方案会让服务在首个请求返回后崩溃。
+
+根因在 `BeamSearchGroup`：它的 kernel 把 `top_probs` 的行宽硬编码为 `beam_width`——
+按 `request_idx * beam_width * beam_width` 定位每个 request、按 `align_beam_width2`
+跨行（`beam_search_group.cpp` 的 `Psum`）。把 round2 的 top-k 裁到 96 后，
+kernel 仍按 512 列去读实际只有 96 列的张量，越界踩内存。
+
+而且这不只是索引问题：该 kernel 分块 TopK 后每块只保留 `align_top_k` 个候选，
+最终也只能产出 `align_top_k` 个 beam。要选满 `beam_width` 个 beam 就必须
+`top_k >= beam_width`。换言之 `top_k == beam_width` 是这个算子的语义契约，
+不是可调参数。
+
+要真正吃到裁剪收益，得先重构 `BeamSearchGroup`，把「候选列宽」和「每块选多少」
+这两个当前都由 `beam_width` 兼任的角色拆开。这个改动的风险和收益需要单独评估。

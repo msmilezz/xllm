@@ -1091,6 +1091,9 @@ bool RecWorkerImpl::OneRecXAttentionWorkPipeline::can_use_device_constraints(
     int32_t current_step,
     int32_t beam_width) const {
 #if defined(USE_NPU)
+  // BeamSearchGroup reads top_probs with a hard-coded row stride of beam_width
+  // (see its kernel's request_idx * beam_width * beam_width indexing), so every
+  // round must hand it exactly beam_width candidate columns.
   return FLAGS_enable_constrained_decoding &&
          constraint_device_tensors_.initialized && current_step >= 0 &&
          current_step < REC_TOKEN_SIZE && beam_width > 0 &&
@@ -1100,7 +1103,6 @@ bool RecWorkerImpl::OneRecXAttentionWorkPipeline::can_use_device_constraints(
              sampling_params.sample_idxes.numel() &&
          sampling_params.do_sample.defined() &&
          sampling_params.use_beam_search && sampling_params.logprobs &&
-         sampling_params.max_top_logprobs > 0 &&
          sampling_params.max_top_logprobs == beam_width &&
          !sampling_params.frequency_penalties.defined() &&
          !sampling_params.presence_penalties.defined() &&
@@ -2095,7 +2097,9 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
     const bool final_round = round == total_rounds - 1;
     const bool output_logprobs = sampling_params.logprobs;
     const int64_t output_max_top_logprobs = sampling_params.max_top_logprobs;
-    if (final_round && requested_result_width != beam_width) {
+    const bool uses_final_select =
+        final_round && requested_result_width != beam_width;
+    if (uses_final_select) {
       round_sampling_params.max_top_logprobs = std::max<int64_t>(
           round_sampling_params.max_top_logprobs, requested_result_width);
       round_sampling_params.logprobs = true;
@@ -2105,7 +2109,7 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
     if (!result.has_value()) {
       return std::nullopt;
     }
-    if (final_round && requested_result_width != beam_width &&
+    if (uses_final_select &&
         util::get_bool_env("XLLM_DEBUG_ONEREC_ENGINE_TRACE", false)) {
       LOG(INFO) << "OneRec xattention final round sampling shapes: "
                 << "requested_result_width=" << requested_result_width
@@ -2131,7 +2135,7 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
     }
 
     torch::Tensor final_round_token_ids;
-    if (final_round && requested_result_width == beam_width) {
+    if (final_round && !uses_final_select) {
       // Returned tensors must not alias pipeline storage that the next request
       // can reuse while asynchronous output handling is still in flight.
       final_round_token_ids = torch::empty_like(beam_tensors.out_token_ids);
@@ -2154,7 +2158,7 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
           beam_tensors.out_token_ids,
           beam_tensors.out_log_probs,
           beam_tensors.out_seqgroup);
-    } else if (final_round && requested_result_width != beam_width) {
+    } else if (uses_final_select) {
       top_tokens = result->sample_output.top_tokens.to(torch::kInt32);
       top_logprobs = result->sample_output.top_logprobs;
       OneRecBeamSearchOutputTensors final_tensors =

@@ -18,6 +18,9 @@ limitations under the License.
 
 #include <google/protobuf/util/json_util.h>
 
+#include <algorithm>
+#include <string>
+
 #include "core/common/global_flags.h"
 #include "core/common/instance_name.h"
 #include "core/util/uuid.h"
@@ -608,11 +611,15 @@ bool RequestParams::verify_params(OutputCallback callback) const {
                           source_xservice_addr);
       return false;
     }
-    if (top_logprobs < 0 || top_logprobs > 2000) {
-      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
-                          "logprobs must be between 0 and 2000",
-                          service_request_id,
-                          source_xservice_addr);
+    // Beam search asks for one logprob column per beam, so a wide beam
+    // legitimately needs more columns than the generic cap allows.
+    const int32_t max_top_logprobs = std::max(2000, beam_width);
+    if (top_logprobs < 0 || top_logprobs > max_top_logprobs) {
+      CALLBACK_WITH_ERROR(
+          StatusCode::INVALID_ARGUMENT,
+          "logprobs must be between 0 and " + std::to_string(max_top_logprobs),
+          service_request_id,
+          source_xservice_addr);
       return false;
     }
   }

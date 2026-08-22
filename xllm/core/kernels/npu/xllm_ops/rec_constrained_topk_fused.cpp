@@ -42,7 +42,9 @@ limitations under the License.
 namespace xllm::kernel::npu {
 namespace {
 
-constexpr int64_t kRecConstrainedTopKFusedMaxK = 512;
+// Must track kRecConstrainedTopKMaxK in the kernel header. Requests above this
+// fall back to the composite implementation rather than failing.
+constexpr int64_t kRecConstrainedTopKFusedMaxK = 1024;
 
 int64_t monotonic_time_us() {
   const auto now = std::chrono::steady_clock::now().time_since_epoch();
